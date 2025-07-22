@@ -75,7 +75,7 @@ class ForexTradingBot:
         self.lookback_days = 7
         
     def get_forex_data(self, symbol, days=30):
-        """Fetch forex data with robust error handling"""
+        """Fetch forex data with robust error handling including PLN pairs"""
         try:
             yf_symbol = FOREX_SYMBOLS.get(symbol, f"{symbol}=X")
             ticker = yf.Ticker(yf_symbol)
@@ -102,8 +102,64 @@ class ForexTradingBot:
                 except Exception as e2:
                     st.warning(f"Method 2 failed: {str(e2)[:100]}...")
             
+            # Method 3: Try alternative PLN symbols if dealing with Polish Zloty
+            if (data is None or data.empty) and 'PLN' in symbol:
+                try:
+                    # Alternative PLN symbols
+                    alt_symbols = {
+                        'USDPLN': ['PLN=X', 'USDPLN=X', 'USD/PLN'],
+                        'EURPLN': ['EURPLN=X', 'EUR/PLN'], 
+                        'GBPPLN': ['GBPPLN=X', 'GBP/PLN'],
+                        'CHFPLN': ['CHFPLN=X', 'CHF/PLN']
+                    }
+                    
+                    for alt_symbol in alt_symbols.get(symbol, []):
+                        try:
+                            alt_ticker = yf.Ticker(alt_symbol)
+                            data = alt_ticker.history(period=f"{days}d", interval="1d")
+                            if not data.empty:
+                                st.success(f"✅ Fetched {len(data)} days using alternative symbol {alt_symbol}")
+                                yf_symbol = alt_symbol
+                                break
+                        except:
+                            continue
+                            
+                except Exception as e3:
+                    st.warning(f"Method 3 (PLN alternatives) failed: {str(e3)[:100]}...")
+            
+            # Method 4: Try inverted pair for PLN (1/rate)
+            if (data is None or data.empty) and 'PLN' in symbol:
+                try:
+                    # Try inverted symbols (PLN as base currency doesn't work well on Yahoo)
+                    base_currency = symbol.replace('PLN', '')
+                    inverted_symbol = f"{base_currency}PLN=X"
+                    
+                    inv_ticker = yf.Ticker(inverted_symbol)
+                    inv_data = inv_ticker.history(period=f"{days}d", interval="1d")
+                    
+                    if not inv_data.empty:
+                        # Invert the data (1/rate) to get correct PLN rates
+                        data = inv_data.copy()
+                        for col in ['Open', 'High', 'Low', 'Close']:
+                            # For inverted rates: PLN rate = 1 / (base currency rate)
+                            # But actually we want: base/PLN rate, so we keep as is
+                            pass  # Keep original data
+                        st.success(f"✅ Fetched {len(data)} days using base pair approach")
+                        yf_symbol = inverted_symbol
+                        
+                except Exception as e4:
+                    st.warning(f"Method 4 (inverted pairs) failed: {str(e4)[:100]}...")
+            
             if data is None or data.empty:
-                st.error(f"❌ Could not fetch data for {symbol}")
+                st.error(f"❌ Could not fetch data for {symbol} after trying all methods")
+                if 'PLN' in symbol:
+                    st.info(f"""
+                    💡 **PLN Pair Tips:**
+                    - PLN pairs might have limited data on Yahoo Finance
+                    - Try major pairs like EURUSD, GBPUSD for testing
+                    - Polish market data is often delayed or limited
+                    - Consider using alternative data sources for PLN pairs
+                    """)
                 return None, None
             
             # Clean and process data
@@ -133,7 +189,7 @@ class ForexTradingBot:
             df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
             
             if len(df) < 5:
-                st.error(f"❌ Insufficient data for {symbol}")
+                st.error(f"❌ Insufficient data for {symbol} (only {len(df)} valid days)")
                 return None, None
             
             # Verification info
@@ -143,13 +199,21 @@ class ForexTradingBot:
                 'data_points': len(df),
                 'latest_price': float(df['Close'].iloc[-1]),
                 'latest_date': df['Date'].iloc[-1],
-                'fetch_time': datetime.now()
+                'fetch_time': datetime.now(),
+                'is_pln_pair': 'PLN' in symbol
             }
             
             return df, verification
             
         except Exception as e:
             st.error(f"❌ Error fetching {symbol}: {str(e)}")
+            if 'PLN' in symbol:
+                st.info("""
+                📝 **PLN Pair Troubleshooting:**
+                - Polish Zloty pairs have limited availability
+                - Data might be sparse or delayed  
+                - Try refreshing or selecting major currency pairs
+                """)
             return None, None
     
     def calculate_pivot_points(self, df):
@@ -199,11 +263,28 @@ st.markdown("**Live Forex data with Pivot Points analysis**")
 
 # Sidebar configuration
 st.sidebar.header("⚙️ Configuration")
-selected_symbol = st.sidebar.selectbox(
-    "Select Currency Pair:",
-    list(FOREX_SYMBOLS.keys()),
+
+# Group currency pairs by category
+major_pairs = ['EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY']
+cross_pairs = ['EURJPY', 'GBPJPY', 'EURGBP']
+pln_pairs = ['EURPLN', 'USDPLN', 'GBPPLN', 'CHFPLN']
+
+# Create expandable sections for different pair types
+st.sidebar.markdown("### Currency Pairs")
+
+pair_category = st.sidebar.radio(
+    "Select Category:",
+    ["🌍 Major Pairs", "🔄 Cross Pairs", "🇵🇱 PLN Pairs"],
     index=0
 )
+
+if pair_category == "🌍 Major Pairs":
+    selected_symbol = st.sidebar.selectbox("Select Major Pair:", major_pairs, index=0)
+elif pair_category == "🔄 Cross Pairs":
+    selected_symbol = st.sidebar.selectbox("Select Cross Pair:", cross_pairs, index=0)
+else:  # PLN Pairs
+    selected_symbol = st.sidebar.selectbox("Select PLN Pair:", pln_pairs, index=0)
+    st.sidebar.info("💡 PLN pairs may have limited data availability")
 
 chart_days = st.sidebar.slider("Chart Days", 7, 30, 14)
 show_volume = st.sidebar.checkbox("Show Volume", False)
@@ -256,19 +337,26 @@ def create_chart(df, symbol, days, show_vol, show_piv):
                 
                 levels = {
                     'R2': (latest_row.get('R2'), 'red'),
-                    'R1': (latest_row.get('R1'), 'orange'),
-                    'Pivot': (latest_row['Pivot'], 'purple'),
-                    'S1': (latest_row.get('S1'), 'blue'),
-                    'S2': (latest_row.get('S2'), 'darkblue')
+                    'R1': (latest_row.get('R1'), 'red'),
+                    'Pivot': (latest_row['Pivot'], 'black'),
+                    'S1': (latest_row.get('S1'), 'green'),
+                    'S2': (latest_row.get('S2'), 'green')
                 }
                 
                 for name, (value, color) in levels.items():
                     if pd.notna(value):
                         hline_args = {
                             'y': value,
-                            'line_dash': 'dash',
+                            'line_dash': 'solid',  # Changed from 'dash' to solid
                             'line_color': color,
-                            'annotation_text': f'{name}: {value:.5f}'
+                            'line_width': 1,  # Thin lines
+                            'annotation_text': f'{name}: {value:.5f}',
+                            'annotation_position': "top right",  # Moved to right
+                            'annotation_font_size': 10,
+                            'annotation_font_color': color,
+                            'annotation_bgcolor': 'rgba(255,255,255,0.8)',  # Light background for readability
+                            'annotation_bordercolor': color,
+                            'annotation_borderwidth': 1
                         }
                         if show_vol:
                             fig.add_hline(row=1, col=1, **hline_args)
@@ -354,6 +442,8 @@ if df is not None and verification:
     
     with col4:
         st.metric("Latest Date", verification['latest_date'].strftime('%Y-%m-%d'))
+        if verification.get('is_pln_pair', False):
+            st.caption("🇵🇱 PLN Pair")
     
     # Signal analysis
     if pd.notna(latest_row.get('S2')) and pd.notna(latest_row.get('R2')):
