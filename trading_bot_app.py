@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-MT5 Signal Generator - Streamlit Cloud Ready
-Momentum Pivot Points Trading Strategy
-Deploy: streamlit.app
+MT5 Signal Generator with Price Verification
+Shows exactly how prices are fetched from Yahoo Finance
 """
 
 import pandas as pd
@@ -11,113 +10,88 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import time
-import warnings
-warnings.filterwarnings('ignore')
+import requests
 
-# Page config - must be first Streamlit command
 st.set_page_config(
-    page_title="MT5 Trading Signals ⚡",
+    page_title="MT5 Signals with Price Verification",
     page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': None,
-        'Report a bug': None,
-        'About': "MT5 Momentum Trading Signals Generator"
-    }
+    layout="wide"
 )
 
-# Custom CSS for better appearance
+# Custom CSS
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 1rem;
-        font-weight: bold;
-    }
-    .signal-card {
-        border-radius: 15px;
-        padding: 20px;
-        margin: 15px 0;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-    }
-    .buy-signal {
-        border-left: 5px solid #28a745;
-        background: linear-gradient(90deg, #d4edda, #f8f9fa);
-    }
-    .sell-signal {
-        border-left: 5px solid #dc3545;
-        background: linear-gradient(90deg, #f8d7da, #f8f9fa);
-    }
-    .metric-card {
-        background: white;
-        padding: 15px;
+    .price-verification {
+        background: #e8f4f8;
+        border: 2px solid #1f77b4;
         border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        text-align: center;
+        padding: 15px;
+        margin: 10px 0;
     }
-    .status-indicator {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        display: inline-block;
-        margin-right: 8px;
+    .data-source {
+        background: #fff3cd;
+        border: 2px solid #ffc107;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
     }
-    .status-active { background-color: #28a745; }
-    .status-inactive { background-color: #dc3545; }
+    .real-time-indicator {
+        background: #d4edda;
+        border: 2px solid #28a745;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Forex symbols mapping for yfinance
 FOREX_SYMBOLS = {
     'EURUSD': 'EURUSD=X',
     'GBPUSD': 'GBPUSD=X', 
     'USDCHF': 'USDCHF=X',
     'USDJPY': 'USDJPY=X',
-    'EURJPY': 'EURJPY=X',
-    'GBPJPY': 'GBPJPY=X',
-    'AUDUSD': 'AUDUSD=X',
-    'NZDUSD': 'NZDUSD=X',
-    'USDCAD': 'USDCAD=X',
-    'EURAUD': 'EURAUD=X',
-    'EURGBP': 'EURGBP=X',
-    'EURPLN': 'EURPLN=X',
-    'USDPLN': 'USDPLN=X',
-    'GBPPLN': 'GBPPLN=X',
-    'CHFPLN': 'CHFPLN=X'
+    'AUDUSD': 'AUDUSD=X'
 }
 
-class ForexMomentumBot:
+class VerifiablePriceBot:
     def __init__(self):
         self.lookback_days = 7
-        self.holding_days = 3
-        self.stop_loss_percent = 2.0
+        self.data_source = "Yahoo Finance"
+        self.last_fetch_time = None
+        self.fetch_details = {}
         
-    @st.cache_data(ttl=300)  # Cache for 5 minutes
-    def get_forex_data(_self, symbol, days=30):
-        """Fetch forex data with caching"""
+    def get_forex_data_with_verification(self, symbol, days=30):
+        """Fetch forex data with detailed verification info"""
+        fetch_start_time = datetime.now()
+        
         try:
             yf_symbol = FOREX_SYMBOLS.get(symbol, f"{symbol}=X")
+            
+            # Show what we're fetching
+            st.info(f"🔄 Fetching {symbol} data from Yahoo Finance...")
+            st.code(f"yfinance.Ticker('{yf_symbol}').history()")
+            
             ticker = yf.Ticker(yf_symbol)
             
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days)
             
+            # Fetch the data
             data = ticker.history(
                 start=start_date, 
                 end=end_date,
-                interval="1d",
-                auto_adjust=True,
-                prepost=True
+                interval="1d"
             )
             
+            fetch_end_time = datetime.now()
+            fetch_duration = (fetch_end_time - fetch_start_time).total_seconds()
+            
             if data.empty:
-                return None
+                st.error(f"❌ No data returned for {symbol}")
+                return None, None
                 
+            # Process data
             df = pd.DataFrame({
                 'Date': data.index,
                 'Open': data['Open'],
@@ -127,17 +101,44 @@ class ForexMomentumBot:
                 'Volume': data['Volume']
             }).reset_index(drop=True)
             
-            # Remove any NaN values
-            df = df.dropna()
+            # Verification details
+            verification_info = {
+                'symbol': symbol,
+                'yahoo_symbol': yf_symbol,
+                'fetch_time': fetch_end_time,
+                'fetch_duration': fetch_duration,
+                'data_points': len(df),
+                'date_range': f"{df['Date'].min().date()} to {df['Date'].max().date()}",
+                'latest_price': df['Close'].iloc[-1],
+                'latest_date': df['Date'].iloc[-1],
+                'data_age_hours': (datetime.now() - df['Date'].iloc[-1].to_pydatetime()).total_seconds() / 3600
+            }
             
-            return df if len(df) > 10 else None
+            return df, verification_info
             
         except Exception as e:
-            st.error(f"Error fetching data for {symbol}: {str(e)}")
-            return None
+            st.error(f"❌ Error fetching data for {symbol}: {str(e)}")
+            return None, None
+    
+    def verify_yahoo_finance_connection(self):
+        """Verify connection to Yahoo Finance"""
+        st.markdown("### 🔍 Yahoo Finance Connection Test")
+        
+        try:
+            # Test direct connection
+            test_url = "https://finance.yahoo.com"
+            response = requests.get(test_url, timeout=5)
+            
+            if response.status_code == 200:
+                st.success(f"✅ Yahoo Finance is accessible (Status: {response.status_code})")
+            else:
+                st.warning(f"⚠️ Yahoo Finance returned status: {response.status_code}")
+                
+        except Exception as e:
+            st.error(f"❌ Cannot reach Yahoo Finance: {str(e)}")
     
     def calculate_pivot_points(self, df):
-        """Calculate momentum pivot points"""
+        """Calculate pivot points with verification"""
         if len(df) < self.lookback_days:
             return df
             
@@ -150,399 +151,432 @@ class ForexMomentumBot:
             avg_close = window['Close'].mean()
             
             pivot = (avg_high + avg_low + avg_close) / 3
-            r1 = 2 * pivot - avg_low
             r2 = pivot + (avg_high - avg_low)
-            s1 = 2 * pivot - avg_high
             s2 = pivot - (avg_high - avg_low)
             
             pivot_data.append({
                 'Date': df.loc[i, 'Date'],
                 'Pivot': pivot,
-                'R1': r1,
                 'R2': r2,
-                'S1': s1,
                 'S2': s2,
             })
         
-        if not pivot_data:
-            return df
-            
         pivot_df = pd.DataFrame(pivot_data)
         df = df.merge(pivot_df, on='Date', how='left')
         return df
-    
-    def calculate_momentum_strength(self, df, latest_row, signal_type):
-        """Calculate signal strength based on momentum"""
-        try:
-            if len(df) < 5:
-                return 50.0
-                
-            # Price momentum
-            price_changes = df['Close'].pct_change(periods=3).dropna()
-            avg_momentum = abs(price_changes.mean()) * 100
-            
-            # Volume momentum (if available)
-            volume_momentum = 0
-            if 'Volume' in df.columns and df['Volume'].sum() > 0:
-                vol_changes = df['Volume'].pct_change().dropna()
-                volume_momentum = abs(vol_changes.mean()) * 10
-            
-            # Distance from pivot level
-            current_price = latest_row['Close']
-            if signal_type == 'BUY':
-                level_distance = abs(current_price - latest_row['S2']) / current_price * 1000
-            else:
-                level_distance = abs(current_price - latest_row['R2']) / current_price * 1000
-            
-            # Volatility factor
-            volatility = df['Close'].pct_change().std() * 100
-            vol_factor = max(0, 50 - volatility * 5)
-            
-            # Combine factors
-            strength = min(100, max(30, 
-                avg_momentum * 20 + 
-                volume_momentum + 
-                level_distance * 10 + 
-                vol_factor
-            ))
-            
-            return round(strength, 1)
-            
-        except Exception:
-            return 50.0
-    
-    def generate_signal(self, symbol):
-        """Generate trading signal"""
-        df = self.get_forex_data(symbol, 35)
-        if df is None or len(df) < self.lookback_days + 5:
-            return None, None
-            
-        df = self.calculate_pivot_points(df)
-        latest_row = df.iloc[-1]
-        
-        # Check if we have pivot data
-        if pd.isna(latest_row.get('S2')) or pd.isna(latest_row.get('R2')):
-            return None, df
-            
-        current_price = latest_row['Close']
-        signal = None
-        
-        # BUY Signal: Price below S2 (strong downward momentum break)
-        if current_price < latest_row['S2']:
-            signal = {
-                'symbol': symbol,
-                'type': 'BUY',
-                'current_price': current_price,
-                'entry_zone': latest_row['S2'],
-                'stop_loss': current_price * (1 - self.stop_loss_percent / 100),
-                'take_profit_1': latest_row['S1'],
-                'take_profit_2': latest_row['Pivot'],
-                'pivot_levels': {
-                    'S2': latest_row['S2'],
-                    'S1': latest_row['S1'],
-                    'Pivot': latest_row['Pivot'],
-                    'R1': latest_row['R1'],
-                    'R2': latest_row['R2']
-                },
-                'timestamp': datetime.now(),
-                'holding_days': self.holding_days,
-                'strength': self.calculate_momentum_strength(df, latest_row, 'BUY'),
-                'risk_reward': abs(latest_row['Pivot'] - current_price) / abs(current_price - (current_price * (1 - self.stop_loss_percent / 100)))
-            }
-        
-        # SELL Signal: Price above R2 (strong upward momentum break)
-        elif current_price > latest_row['R2']:
-            signal = {
-                'symbol': symbol,
-                'type': 'SELL', 
-                'current_price': current_price,
-                'entry_zone': latest_row['R2'],
-                'stop_loss': current_price * (1 + self.stop_loss_percent / 100),
-                'take_profit_1': latest_row['R1'],
-                'take_profit_2': latest_row['Pivot'],
-                'pivot_levels': {
-                    'S2': latest_row['S2'],
-                    'S1': latest_row['S1'],
-                    'Pivot': latest_row['Pivot'],
-                    'R1': latest_row['R1'],
-                    'R2': latest_row['R2']
-                },
-                'timestamp': datetime.now(),
-                'holding_days': self.holding_days,
-                'strength': self.calculate_momentum_strength(df, latest_row, 'SELL'),
-                'risk_reward': abs(latest_row['Pivot'] - current_price) / abs((current_price * (1 + self.stop_loss_percent / 100)) - current_price)
-            }
-            
-        return signal, df
 
-# Initialize the bot
-@st.cache_resource
-def get_bot():
-    return ForexMomentumBot()
-
-bot = get_bot()
+# Initialize bot
+bot = VerifiablePriceBot()
 
 # Header
-st.markdown('<p class="main-header">🎯 MT5 Momentum Trading Signals</p>', unsafe_allow_html=True)
+st.title("🔍 MT5 Signals with Price Verification")
+st.markdown("**Transparent view of how prices are fetched from Yahoo Finance**")
 
-# Sidebar configuration
-st.sidebar.image("https://via.placeholder.com/200x80/1f77b4/white?text=MT5+SIGNALS", width=200)
-st.sidebar.markdown("### ⚙️ Configuration")
+# Verification section
+st.markdown("## 🌐 Data Source Verification")
 
-# Symbol selection
-selected_symbols = st.sidebar.multiselect(
-    "Select Currency Pairs:",
-    list(FOREX_SYMBOLS.keys()),
-    default=['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD']
-)
-
-# Parameters
-bot.holding_days = st.sidebar.slider("Holding Period (days)", 1, 10, 3)
-bot.stop_loss_percent = st.sidebar.slider("Stop Loss (%)", 0.5, 5.0, 2.0, 0.1)
-
-# Auto refresh
-auto_refresh = st.sidebar.checkbox("Auto Refresh (60s)", value=False)
-manual_refresh = st.sidebar.button("🔄 Refresh Now", type="primary")
-
-# Risk management settings
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛡️ Risk Management")
-min_strength = st.sidebar.slider("Minimum Signal Strength", 30, 80, 50)
-max_risk_reward = st.sidebar.slider("Min Risk:Reward Ratio", 1.0, 5.0, 2.0, 0.1)
-
-# Display current time
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"**🕐 Last Update:** {datetime.now().strftime('%H:%M:%S')}")
-st.sidebar.markdown(f"**📅 Date:** {datetime.now().strftime('%Y-%m-%d')}")
-
-# Main content
-if not selected_symbols:
-    st.warning("⚠️ Please select at least one currency pair from the sidebar to begin analysis.")
-    st.stop()
-
-# Generate signals
-with st.spinner("🔍 Analyzing market conditions..."):
-    all_signals = []
-    charts_data = {}
-    progress_bar = st.progress(0)
-    
-    for i, symbol in enumerate(selected_symbols):
-        progress_bar.progress((i + 1) / len(selected_symbols))
-        
-        signal, df = bot.generate_signal(symbol)
-        if signal and signal['strength'] >= min_strength and signal['risk_reward'] >= max_risk_reward:
-            all_signals.append(signal)
-        
-        if df is not None:
-            charts_data[symbol] = df
-    
-    progress_bar.empty()
-
-# Display active signals
-st.markdown("## 🚨 Active Trading Signals")
-
-if all_signals:
-    # Sort by strength
-    all_signals = sorted(all_signals, key=lambda x: x['strength'], reverse=True)
-    
-    for i, signal in enumerate(all_signals):
-        signal_class = "buy-signal" if signal['type'] == 'BUY' else "sell-signal"
-        signal_emoji = "🟢" if signal['type'] == 'BUY' else "🔴"
-        
-        # Strength indicator
-        if signal['strength'] >= 70:
-            strength_color = "🟢"
-            strength_label = "STRONG"
-        elif signal['strength'] >= 50:
-            strength_color = "🟡"
-            strength_label = "MODERATE"
-        else:
-            strength_color = "🟠"
-            strength_label = "WEAK"
-        
-        # Risk-reward indicator
-        rr_color = "🟢" if signal['risk_reward'] >= 2.5 else "🟡" if signal['risk_reward'] >= 2.0 else "🟠"
-        
-        st.markdown(f"""
-        <div class="signal-card {signal_class}">
-            <h3>{signal_emoji} {signal['symbol']} - {signal['type']} SIGNAL #{i+1}</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
-                <div>
-                    <h4>📊 Entry Details</h4>
-                    <strong>Current Price:</strong> {signal['current_price']:.5f}<br>
-                    <strong>Entry Zone:</strong> {signal['entry_zone']:.5f}<br>
-                    <strong>Stop Loss:</strong> {signal['stop_loss']:.5f}<br>
-                    <strong>Holding Period:</strong> {signal['holding_days']} days
-                </div>
-                <div>
-                    <h4>🎯 Profit Targets</h4>
-                    <strong>Target 1:</strong> {signal['take_profit_1']:.5f}<br>
-                    <strong>Target 2:</strong> {signal['take_profit_2']:.5f}<br>
-                    <strong>Risk:Reward:</strong> {rr_color} 1:{signal['risk_reward']:.2f}<br>
-                </div>
-                <div>
-                    <h4>📈 Signal Quality</h4>
-                    <strong>Strength:</strong> {strength_color} {signal['strength']:.1f}% ({strength_label})<br>
-                    <strong>Generated:</strong> {signal['timestamp'].strftime('%H:%M:%S')}<br>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Chart for each signal
-        with st.expander(f"📊 Chart Analysis - {signal['symbol']}", expanded=False):
-            if signal['symbol'] in charts_data:
-                df = charts_data[signal['symbol']]
-                
-                # Create chart
-                fig = go.Figure()
-                
-                # Candlestick chart
-                recent_data = df.tail(30)  # Last 30 days
-                fig.add_trace(go.Candlestick(
-                    x=recent_data['Date'],
-                    open=recent_data['Open'],
-                    high=recent_data['High'], 
-                    low=recent_data['Low'],
-                    close=recent_data['Close'],
-                    name=signal['symbol']
-                ))
-                
-                # Add pivot levels
-                pivot_levels = signal['pivot_levels']
-                level_colors = {
-                    'R2': 'red', 'R1': 'orange', 
-                    'Pivot': 'purple', 
-                    'S1': 'blue', 'S2': 'darkblue'
-                }
-                
-                for level_name, level_value in pivot_levels.items():
-                    fig.add_hline(
-                        y=level_value,
-                        line_dash="dash",
-                        line_color=level_colors.get(level_name, 'gray'),
-                        annotation_text=f"{level_name}: {level_value:.5f}",
-                        annotation_position="bottom right"
-                    )
-                
-                # Add signal point
-                fig.add_scatter(
-                    x=[recent_data['Date'].iloc[-1]],
-                    y=[signal['current_price']],
-                    mode='markers+text',
-                    marker=dict(
-                        size=20,
-                        color='green' if signal['type'] == 'BUY' else 'red',
-                        symbol='triangle-up' if signal['type'] == 'BUY' else 'triangle-down'
-                    ),
-                    text=[f"{signal['type']}<br>{signal['strength']:.0f}%"],
-                    textposition='top center',
-                    name=f"{signal['type']} Signal",
-                    showlegend=True
-                )
-                
-                fig.update_layout(
-                    title=f"{signal['symbol']} - Momentum Pivot Analysis",
-                    height=500,
-                    xaxis_rangeslider_visible=False,
-                    showlegend=True,
-                    xaxis_title="Date",
-                    yaxis_title="Price"
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.info("🔍 No signals meeting your criteria at the moment. Try adjusting the minimum strength or risk-reward ratio.")
-
-# Market overview
-st.markdown("## 📊 Market Overview")
-
-col1, col2, col3, col4 = st.columns(4)
+col1, col2 = st.columns(2)
 
 with col1:
-    st.metric("Pairs Monitored", len(selected_symbols))
+    st.markdown('<div class="data-source">', unsafe_allow_html=True)
+    st.markdown("### 📊 Data Source Details")
+    st.markdown(f"""
+    - **Provider:** Yahoo Finance  
+    - **Library:** yfinance (Python)
+    - **Update Frequency:** Real-time (15-20 min delay)
+    - **Data Type:** OHLCV (Open, High, Low, Close, Volume)
+    - **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with col2:
-    st.metric("Active Signals", len(all_signals))
+    if st.button("🔄 Test Yahoo Finance Connection"):
+        bot.verify_yahoo_finance_connection()
 
-with col3:
-    if all_signals:
-        avg_strength = sum(s['strength'] for s in all_signals) / len(all_signals)
-        st.metric("Avg Strength", f"{avg_strength:.1f}%")
+        # Symbol selection with dynamic chart
+st.sidebar.header("⚙️ Configuration")
+selected_symbol = st.sidebar.selectbox(
+    "Select Currency Pair:",
+    list(FOREX_SYMBOLS.keys()),
+    index=0,
+    key="symbol_selector"
+)
+
+# Chart configuration
+st.sidebar.subheader("📊 Chart Settings")
+chart_days = st.sidebar.slider("Days to Display", 7, 30, 7)
+show_volume = st.sidebar.checkbox("Show Volume", value=False)
+show_pivot_history = st.sidebar.checkbox("Show Historical Pivots", value=True)
+
+# Data options
+st.sidebar.subheader("📋 Data Options")
+show_raw_data = st.sidebar.checkbox("Show Raw Data", value=False)
+show_verification = st.sidebar.checkbox("Show Verification Details", value=True)
+auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=False)
+
+# Dynamic chart that updates when symbol changes
+st.markdown(f"## 📊 Live {selected_symbol} Chart - Last {chart_days} Days")
+
+# Container for dynamic chart
+chart_container = st.empty()
+data_container = st.empty()
+
+# Function to update chart
+def update_chart_and_data():
+    with st.spinner(f"Fetching {selected_symbol} data..."):
+        df, verification = bot.get_forex_data_with_verification(selected_symbol, max(chart_days + 10, 30))
+    
+    if df is not None and verification:
+        # Calculate pivot points
+        df_with_pivots = bot.calculate_pivot_points(df)
+        
+        # Get chart data
+        chart_data = df_with_pivots.tail(chart_days)
+        latest_row = df_with_pivots.iloc[-1]
+        
+        # Create advanced chart
+        fig = create_advanced_chart(chart_data, latest_row, selected_symbol, show_volume, show_pivot_history)
+        
+        with chart_container.container():
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_{selected_symbol}")
+        
+        # Show current levels and signal analysis
+        with data_container.container():
+            display_current_analysis(latest_row, verification, selected_symbol)
+            
+            # Show verification details if enabled
+            if show_verification:
+                display_verification_details(verification)
+            
+            # Show raw data if enabled
+            if show_raw_data:
+                display_raw_data(chart_data)
+        
+        return df_with_pivots, verification
     else:
-        st.metric("Avg Strength", "N/A")
+        with chart_container.container():
+            st.error(f"❌ Could not fetch data for {selected_symbol}")
+        return None, None
 
-with col4:
-    buy_signals = sum(1 for s in all_signals if s['type'] == 'BUY')
-    sell_signals = len(all_signals) - buy_signals
-    st.metric("BUY/SELL", f"{buy_signals}/{sell_signals}")
-
-# Instructions panel
-st.markdown("## 📱 MT5 Android Instructions")
-
-if all_signals:
-    st.success("### 🎯 Execute these trades on your MT5 Android app:")
+def create_advanced_chart(df, latest_row, symbol, show_volume, show_pivot_history):
+    """Create advanced OHLC chart with pivot points"""
     
-    for i, signal in enumerate(all_signals, 1):
-        with st.container():
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                st.markdown(f"**Trade #{i}**")
-                st.markdown(f"{'🟢 BUY' if signal['type'] == 'BUY' else '🔴 SELL'}")
+    # Create subplots
+    if show_volume:
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=(f'{symbol} Price', 'Volume'),
+            row_width=[0.7, 0.3]
+        )
+    else:
+        fig = go.Figure()
+    
+    # OHLC Candlestick
+    candlestick = go.Candlestick(
+        x=df['Date'],
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name=f'{symbol} OHLC',
+        increasing_line_color='#26a69a',
+        decreasing_line_color='#ef5350'
+    )
+    
+    if show_volume:
+        fig.add_trace(candlestick, row=1, col=1)
+    else:
+        fig.add_trace(candlestick)
+    
+    # Current pivot points
+    if pd.notna(latest_row.get('Pivot')):
+        current_pivots = {
+            'R2': (latest_row['R2'], 'red', 'dash'),
+            'R1': (latest_row.get('R1', latest_row['Pivot']), 'orange', 'dot'), 
+            'Pivot': (latest_row['Pivot'], 'purple', 'solid'),
+            'S1': (latest_row.get('S1', latest_row['Pivot']), 'blue', 'dot'),
+            'S2': (latest_row['S2'], 'darkblue', 'dash')
+        }
+        
+        for level_name, (level_value, color, line_style) in current_pivots.items():
+            if pd.notna(level_value):
+                line_params = dict(
+                    y=level_value,
+                    line_dash=line_style,
+                    line_color=color,
+                    line_width=2,
+                    annotation_text=f"{level_name}: {level_value:.5f}",
+                    annotation_position="bottom right",
+                    annotation_font_size=10
+                )
                 
-            with col2:
-                st.markdown(f"""
-                **{signal['symbol']}** - {signal['type']}
-                - **Volume:** 0.01-0.10 lots (adjust to your risk)
-                - **Stop Loss:** {signal['stop_loss']:.5f}
-                - **Take Profit 1:** {signal['take_profit_1']:.5f}
-                - **Take Profit 2:** {signal['take_profit_2']:.5f}
-                - **Max Hold:** {signal['holding_days']} days
-                """)
+                if show_volume:
+                    fig.add_hline(row=1, col=1, **line_params)
+                else:
+                    fig.add_hline(**line_params)
+    
+    # Historical pivot points
+    if show_pivot_history and 'Pivot' in df.columns:
+        pivot_data = df.dropna(subset=['Pivot']).tail(chart_days)
+        
+        if len(pivot_data) > 1:
+            # Pivot line
+            pivot_line = go.Scatter(
+                x=pivot_data['Date'],
+                y=pivot_data['Pivot'],
+                mode='lines',
+                name='Historical Pivot',
+                line=dict(color='purple', width=1, dash='dot'),
+                opacity=0.7
+            )
+            
+            if show_volume:
+                fig.add_trace(pivot_line, row=1, col=1)
+            else:
+                fig.add_trace(pivot_line)
+    
+    # Volume chart
+    if show_volume and 'Volume' in df.columns:
+        colors = ['red' if close < open else 'green' 
+                 for close, open in zip(df['Close'], df['Open'])]
+        
+        volume_bars = go.Bar(
+            x=df['Date'],
+            y=df['Volume'],
+            name='Volume',
+            marker_color=colors,
+            opacity=0.7
+        )
+        fig.add_trace(volume_bars, row=2, col=1)
+    
+    # Current price marker
+    current_price = latest_row['Close']
+    current_date = latest_row['Date']
+    
+    price_marker = go.Scatter(
+        x=[current_date],
+        y=[current_price],
+        mode='markers+text',
+        marker=dict(
+            size=12,
+            color='orange',
+            line=dict(width=2, color='white'),
+            symbol='circle'
+        ),
+        text=[f'{current_price:.5f}'],
+        textposition='top center',
+        name='Current Price',
+        showlegend=True
+    )
+    
+    if show_volume:
+        fig.add_trace(price_marker, row=1, col=1)
+    else:
+        fig.add_trace(price_marker)
+    
+    # Update layout
+    title_text = f"{symbol} - Last {chart_days} Days | Current: {current_price:.5f}"
+    
+    fig.update_layout(
+        title=title_text,
+        title_font_size=16,
+        height=600 if show_volume else 500,
+        xaxis_rangeslider_visible=False,
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left", 
+            x=0.01,
+            bgcolor="rgba(255,255,255,0.8)"
+        ),
+        hovermode='x unified'
+    )
+    
+    # Update axes
+    fig.update_xaxes(title_text="Date", showgrid=True, gridwidth=1, gridcolor='lightgray')
+    
+    if show_volume:
+        fig.update_yaxes(title_text="Price", row=1, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(title_text="Volume", row=2, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+    else:
+        fig.update_yaxes(title_text="Price", showgrid=True, gridwidth=1, gridcolor='lightgray')
+    
+    return fig
 
-# Strategy explanation
-with st.expander("📋 Strategy Rules & Risk Management"):
-    st.markdown("""
-    ### 🎯 Momentum Pivot Strategy Rules:
+def display_current_analysis(latest_row, verification, symbol):
+    """Display current price analysis and signals"""
+    current_price = latest_row['Close']
     
-    **Signal Generation:**
-    - **BUY Signal:** Price breaks below S2 (strong support break = potential reversal)
-    - **SELL Signal:** Price breaks above R2 (strong resistance break = potential reversal)
+    st.markdown("### 🎯 Current Market Analysis")
     
-    **Pivot Calculation:**
-    - Based on 7-day average: Pivot = (AvgHigh + AvgLow + AvgClose) / 3
-    - R2 = Pivot + (AvgHigh - AvgLow)
-    - S2 = Pivot - (AvgHigh - AvgLow)
+    # Price metrics
+    col1, col2, col3, col4 = st.columns(4)
     
-    **Risk Management:**
-    - Fixed Stop Loss: 2% (adjustable)
-    - Position Size: 1-2% of account per trade
-    - Max Holding: 3 days (adjustable)
-    - Signal Strength: Minimum 50% (adjustable)
+    with col1:
+        st.metric("Current Price", f"{current_price:.5f}")
+        
+    with col2:
+        if pd.notna(latest_row.get('Pivot')):
+            pivot_diff = current_price - latest_row['Pivot']
+            st.metric("vs Pivot", f"{pivot_diff:+.5f}", delta=f"{(pivot_diff/latest_row['Pivot']*100):+.2f}%")
+        else:
+            st.metric("vs Pivot", "N/A")
     
-    ### ⚠️ Important Disclaimers:
-    - **DEMO ACCOUNT ONLY** - Test thoroughly before live trading
-    - Past performance does not guarantee future results
-    - Never risk more than you can afford to lose
-    - Always use proper risk management
-    - Consider market conditions and news events
-    """)
+    with col3:
+        # Daily change
+        if len(verification) > 0 and 'data_points' in verification and verification['data_points'] > 1:
+            prev_close = latest_row.get('Open', current_price)  # Approximation
+            daily_change = current_price - prev_close
+            st.metric("Daily Change", f"{daily_change:+.5f}", delta=f"{(daily_change/prev_close*100):+.2f}%")
+        else:
+            st.metric("Daily Change", "N/A")
+    
+    with col4:
+        st.metric("Data Age", f"{verification.get('data_age_hours', 0):.1f}h")
+    
+    # Signal analysis
+    if pd.notna(latest_row.get('S2')) and pd.notna(latest_row.get('R2')):
+        signal = None
+        signal_strength = "NEUTRAL"
+        
+        if current_price < latest_row['S2']:
+            signal = "🟢 BUY SIGNAL"
+            signal_strength = "STRONG"
+            signal_reason = f"Price {current_price:.5f} broke below S2 level {latest_row['S2']:.5f}"
+        elif current_price > latest_row['R2']:
+            signal = "🔴 SELL SIGNAL"
+            signal_strength = "STRONG"
+            signal_reason = f"Price {current_price:.5f} broke above R2 level {latest_row['R2']:.5f}"
+        elif current_price < latest_row['S1']:
+            signal = "🟡 WEAK BUY"
+            signal_strength = "WEAK"
+            signal_reason = f"Price {current_price:.5f} below S1 level {latest_row['S1']:.5f}"
+        elif current_price > latest_row['R1']:
+            signal = "🟡 WEAK SELL"
+            signal_strength = "WEAK" 
+            signal_reason = f"Price {current_price:.5f} above R1 level {latest_row['R1']:.5f}"
+        
+        if signal:
+            if signal_strength == "STRONG":
+                st.success(f"**{signal}** - {signal_reason}")
+            else:
+                st.warning(f"**{signal}** - {signal_reason}")
+        else:
+            st.info(f"**No Signal** - Price {current_price:.5f} between pivot levels")
+        
+        # Pivot levels table
+        st.markdown("#### 📊 Current Pivot Levels")
+        pivot_df = pd.DataFrame({
+            'Level': ['R2', 'R1', 'Pivot', 'S1', 'S2'],
+            'Value': [
+                latest_row['R2'],
+                latest_row.get('R1', 'N/A'),
+                latest_row['Pivot'], 
+                latest_row.get('S1', 'N/A'),
+                latest_row['S2']
+            ],
+            'Distance': [
+                f"{((latest_row['R2'] - current_price) / current_price * 100):+.2f}%" if pd.notna(latest_row['R2']) else 'N/A',
+                f"{((latest_row.get('R1', current_price) - current_price) / current_price * 100):+.2f}%" if pd.notna(latest_row.get('R1')) else 'N/A',
+                f"{((latest_row['Pivot'] - current_price) / current_price * 100):+.2f}%" if pd.notna(latest_row['Pivot']) else 'N/A',
+                f"{((latest_row.get('S1', current_price) - current_price) / current_price * 100):+.2f}%" if pd.notna(latest_row.get('S1')) else 'N/A',
+                f"{((latest_row['S2'] - current_price) / current_price * 100):+.2f}%" if pd.notna(latest_row['S2']) else 'N/A'
+            ]
+        })
+        st.dataframe(pivot_df, use_container_width=True, hide_index=True)
 
-# Auto refresh logic
+def display_verification_details(verification):
+    """Display data verification details"""
+    st.markdown('<div class="price-verification">', unsafe_allow_html=True)
+    st.markdown("### ✅ Data Verification")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Fetch Duration", f"{verification['fetch_duration']:.2f}s")
+        st.metric("Data Points", verification['data_points'])
+    
+    with col2:
+        st.metric("Yahoo Symbol", verification['yahoo_symbol'])
+        st.metric("Date Range", verification['date_range'])
+    
+    with col3:
+        st.metric("Fetch Time", verification['fetch_time'].strftime('%H:%M:%S'))
+        st.markdown(f"**Latest Date:** {verification['latest_date'].strftime('%Y-%m-%d')}")
+    
+    st.markdown(f"🔗 **Verify at:** https://finance.yahoo.com/quote/{verification['yahoo_symbol']}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def display_raw_data(df):
+    """Display raw OHLC data"""
+    st.markdown("### 📋 Raw OHLC Data")
+    display_df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
+    
+    # Format numeric columns
+    numeric_cols = ['Open', 'High', 'Low', 'Close']
+    for col in numeric_cols:
+        display_df[col] = display_df[col].round(5)
+    
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+# Update chart when symbol changes or on refresh
+update_chart_and_data()
+
+# Manual refresh button
+if st.button("🔄 Refresh Data", type="primary"):
+    update_chart_and_data()
+
+# Auto refresh logic  
 if auto_refresh:
     time.sleep(2)
     st.rerun()
 
-if manual_refresh:
-    st.rerun()
-
-# Footer
+# Manual verification section
 st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666; font-size: 0.8em; padding: 20px;">
-    <p><strong>⚠️ EDUCATIONAL PURPOSE ONLY - USE DEMO ACCOUNT FOR TESTING</strong></p>
-    <p>📊 Data: Yahoo Finance | 🔄 Auto-refresh available | 🚀 Built with Streamlit</p>
-    <p>💡 Always practice proper risk management and never invest more than you can afford to lose</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("## 🔍 Manual Verification Steps")
+
+with st.expander("How to verify prices yourself"):
+    st.markdown(f"""
+    ### 1. Compare with Yahoo Finance Website:
+    - Go to: https://finance.yahoo.com/quote/{FOREX_SYMBOLS.get(selected_symbol, 'EURUSD=X')}
+    - Compare the current price with what's shown above
+    
+    ### 2. Check yfinance directly in Python:
+    ```python
+    import yfinance as yf
+    ticker = yf.Ticker('{FOREX_SYMBOLS.get(selected_symbol, 'EURUSD=X')}')
+    data = ticker.history(period="1d")
+    print("Latest price:", data['Close'][-1])
+    ```
+    
+    ### 3. Verify data freshness:
+    - Market hours: Forex trades 24/5 (Sunday 5 PM - Friday 5 PM EST)
+    - Data delay: ~15-20 minutes during market hours
+    - Weekend: Shows Friday's closing price
+    
+    ### 4. Alternative verification:
+    - Compare with MT5 Android app prices
+    - Check other sources: Investing.com, TradingView
+    - Verify timestamps match recent market activity
+    """)
+
+# Real-time status
+st.markdown("---")
+current_time = datetime.now()
+market_status = "🟢 OPEN" if current_time.weekday() < 5 else "🔴 CLOSED (Weekend)"
+
+st.markdown(f"""
+**🕐 Current Time:** {current_time.strftime('%Y-%m-%d %H:%M:%S')} UTC  
+**📈 Forex Market:** {market_status}  
+**🔄 Last Data Fetch:** {bot.last_fetch_time or 'Not yet fetched'}  
+**🌐 Data Source:** Yahoo Finance API via yfinance library
+""")
+
+# Auto-refresh option
+if st.sidebar.checkbox("Auto-refresh every 60s"):
+    time.sleep(2)
+    st.rerun()
