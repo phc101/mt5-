@@ -286,6 +286,13 @@ else:  # PLN Pairs
     selected_symbol = st.sidebar.selectbox("Select PLN Pair:", pln_pairs, index=0)
     st.sidebar.info("💡 PLN pairs may have limited data availability")
 
+# Chart type selection
+chart_type = st.sidebar.radio(
+    "Chart Type:",
+    ["📊 Candlestick", "📈 Line Chart", "🔀 Both Charts"],
+    index=0
+)
+
 chart_days = st.sidebar.slider("Chart Days", 7, 30, 14)
 show_volume = st.sidebar.checkbox("Show Volume", False)
 show_pivots = st.sidebar.checkbox("Show Pivot Levels", True)
@@ -294,7 +301,7 @@ auto_refresh = st.sidebar.checkbox("Auto Refresh (60s)", False)
 # Main chart section
 st.markdown(f"## 📊 Live {selected_symbol} Chart - Last {chart_days} Days")
 
-def create_chart(df, symbol, days, show_vol, show_piv):
+def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick"):
     """Create OHLC chart with pivot points"""
     try:
         if df is None or len(df) == 0:
@@ -315,27 +322,48 @@ def create_chart(df, symbol, days, show_vol, show_piv):
         else:
             fig = go.Figure()
         
-        # Add candlestick chart with improved styling
-        candlestick = go.Candlestick(
-            x=chart_data['Date'],
-            open=chart_data['Open'],
-            high=chart_data['High'],
-            low=chart_data['Low'],
-            close=chart_data['Close'],
-            name=f'{symbol} OHLC',
-            increasing_line_color='#26a69a',  # Green for up candles
-            decreasing_line_color='#ef5350',  # Red for down candles
-            increasing_fillcolor='#26a69a',
-            decreasing_fillcolor='#ef5350',
-            line_width=1,  # Thin candle borders
-            increasing_line_width=1,
-            decreasing_line_width=1
-        )
-        
-        if show_vol:
-            fig.add_trace(candlestick, row=1, col=1)
-        else:
-            fig.add_trace(candlestick)
+        # Add price chart based on type
+        if chart_type == "candlestick":
+            # Add candlestick chart with improved styling
+            candlestick = go.Candlestick(
+                x=chart_data['Date'],
+                open=chart_data['Open'],
+                high=chart_data['High'],
+                low=chart_data['Low'],
+                close=chart_data['Close'],
+                name=f'{symbol} OHLC',
+                increasing_line_color='#26a69a',  # Green for up candles
+                decreasing_line_color='#ef5350',  # Red for down candles
+                increasing_fillcolor='#26a69a',
+                decreasing_fillcolor='#ef5350',
+                line_width=1,  # Thin candle borders
+                increasing_line_width=1,
+                decreasing_line_width=1
+            )
+            
+            if show_vol:
+                fig.add_trace(candlestick, row=1, col=1)
+            else:
+                fig.add_trace(candlestick)
+                
+        elif chart_type == "line":
+            # Add line chart for closing prices
+            line_chart = go.Scatter(
+                x=chart_data['Date'],
+                y=chart_data['Close'],
+                mode='lines',
+                name=f'{symbol} Close Price',
+                line=dict(color='#1f77b4', width=2),
+                hovertemplate='<b>%{fullData.name}</b><br>' +
+                            'Date: %{x}<br>' +
+                            'Price: %{y:.5f}<br>' +
+                            '<extra></extra>'
+            )
+            
+            if show_vol:
+                fig.add_trace(line_chart, row=1, col=1)
+            else:
+                fig.add_trace(line_chart)
         
         # Add pivot levels with improved positioning
         if show_piv:
@@ -431,8 +459,10 @@ def create_chart(df, symbol, days, show_vol, show_piv):
             fig.add_trace(price_marker)
         
         # Update layout with extended right margin for labels
+        chart_title = f"{symbol} - {chart_type.title()} Chart - Current: {current_price:.5f}"
+        
         fig.update_layout(
-            title=f"{symbol} - Current: {current_price:.5f}",
+            title=chart_title,
             height=600 if show_vol else 450,
             xaxis_rangeslider_visible=False,
             showlegend=True,
@@ -483,13 +513,118 @@ def create_chart(df, symbol, days, show_vol, show_piv):
                 gridcolor='lightgray'
             )
         
-        # Ensure proper spacing for all candles to show OHLC details
-        fig.update_xaxes(type='category')  # Better candle spacing
+        # Better spacing for charts
+        if chart_type == "candlestick":
+            fig.update_xaxes(type='category')  # Better candle spacing
         
         return fig
         
     except Exception as e:
         st.error(f"Error creating chart: {str(e)}")
+        return None
+
+def create_line_chart(df, symbol, days, show_piv):
+    """Create separate line chart for closing prices"""
+    try:
+        if df is None or len(df) == 0:
+            return None
+        
+        chart_data = df.tail(days)
+        
+        fig = go.Figure()
+        
+        # Add line chart for closing prices
+        line_chart = go.Scatter(
+            x=chart_data['Date'],
+            y=chart_data['Close'],
+            mode='lines+markers',
+            name=f'{symbol} Close Price',
+            line=dict(color='#1f77b4', width=2),
+            marker=dict(size=4, color='#1f77b4'),
+            hovertemplate='<b>%{fullData.name}</b><br>' +
+                        'Date: %{x}<br>' +
+                        'Price: %{y:.5f}<br>' +
+                        '<extra></extra>'
+        )
+        
+        fig.add_trace(line_chart)
+        
+        # Add pivot levels
+        if show_piv:
+            latest_row = chart_data.iloc[-1]
+            if pd.notna(latest_row.get('Pivot')):
+                
+                chart_start = chart_data['Date'].min()
+                chart_end = chart_data['Date'].max()
+                time_diff = chart_end - chart_start
+                label_position = chart_end + time_diff * 0.05
+                
+                levels = {
+                    'R2': (latest_row.get('R2'), 'red'),
+                    'R1': (latest_row.get('R1'), 'red'), 
+                    'Pivot': (latest_row['Pivot'], 'black'),
+                    'S1': (latest_row.get('S1'), 'green'),
+                    'S2': (latest_row.get('S2'), 'green')
+                }
+                
+                for name, (value, color) in levels.items():
+                    if pd.notna(value):
+                        # Add horizontal line
+                        fig.add_hline(
+                            y=value,
+                            line_dash='solid',
+                            line_color=color,
+                            line_width=1
+                        )
+                        
+                        # Add annotation
+                        fig.add_annotation(
+                            x=label_position,
+                            y=value,
+                            text=f'{name}: {value:.5f}',
+                            showarrow=False,
+                            font=dict(size=10, color=color),
+                            bgcolor='rgba(255,255,255,0.9)',
+                            bordercolor=color,
+                            borderwidth=1,
+                            xanchor='left',
+                            yanchor='middle'
+                        )
+        
+        # Current price marker
+        current_price = chart_data['Close'].iloc[-1]
+        current_date = chart_data['Date'].iloc[-1]
+        
+        fig.add_scatter(
+            x=[current_date],
+            y=[current_price],
+            mode='markers+text',
+            marker=dict(size=12, color='orange', line=dict(width=2, color='white')),
+            text=[f'{current_price:.5f}'],
+            textposition='top center',
+            name='Current Price',
+            textfont=dict(size=10, color='orange')
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title=f"{symbol} - Line Chart - Current: {current_price:.5f}",
+            height=400,
+            xaxis_rangeslider_visible=False,
+            showlegend=True,
+            margin=dict(r=120),
+            xaxis_title="Date",
+            yaxis_title="Price"
+        )
+        
+        # Update axes with grid
+        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgray')
+        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgray')
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating line chart: {str(e)}")
         return None
 
 # Fetch data and create chart
