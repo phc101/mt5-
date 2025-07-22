@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import yfinance as yf
 import streamlit as st
-import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import time
 import requests
 
@@ -62,7 +62,7 @@ class VerifiablePriceBot:
         self.fetch_details = {}
         
     def get_forex_data_with_verification(self, symbol, days=30):
-        """Fetch forex data with detailed verification info"""
+        """Fetch forex data with detailed verification info and improved error handling"""
         fetch_start_time = datetime.now()
         
         try:
@@ -74,32 +74,93 @@ class VerifiablePriceBot:
             
             ticker = yf.Ticker(yf_symbol)
             
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
+            # Try multiple approaches to fetch data
+            data = None
             
-            # Fetch the data
-            data = ticker.history(
-                start=start_date, 
-                end=end_date,
-                interval="1d"
-            )
+            # Method 1: Try with period parameter
+            try:
+                data = ticker.history(
+                    period=f"{days}d",
+                    interval="1d",
+                    auto_adjust=True,
+                    prepost=True,
+                    repair=True
+                )
+                if not data.empty:
+                    st.success(f"✅ Method 1: Fetched {len(data)} days using period parameter")
+            except Exception as e1:
+                st.warning(f"⚠️ Method 1 failed: {str(e1)}")
+            
+            # Method 2: Try with start/end dates if Method 1 failed
+            if data is None or data.empty:
+                try:
+                    end_date = datetime.now().replace(tzinfo=None)
+                    start_date = end_date - timedelta(days=days + 5)  # Extra buffer
+                    
+                    data = ticker.history(
+                        start=start_date.strftime('%Y-%m-%d'), 
+                        end=end_date.strftime('%Y-%m-%d'),
+                        interval="1d",
+                        auto_adjust=True,
+                        repair=True
+                    )
+                    if not data.empty:
+                        st.success(f"✅ Method 2: Fetched {len(data)} days using date range")
+                except Exception as e2:
+                    st.warning(f"⚠️ Method 2 failed: {str(e2)}")
+            
+            # Method 3: Try alternative symbol format
+            if data is None or data.empty:
+                try:
+                    alt_symbol = f"{symbol[:3]}{symbol[3:]}=X"  # Different format
+                    alt_ticker = yf.Ticker(alt_symbol)
+                    data = alt_ticker.history(period=f"{days}d", interval="1d")
+                    if not data.empty:
+                        st.success(f"✅ Method 3: Fetched {len(data)} days using alternative symbol {alt_symbol}")
+                        yf_symbol = alt_symbol
+                except Exception as e3:
+                    st.warning(f"⚠️ Method 3 failed: {str(e3)}")
             
             fetch_end_time = datetime.now()
             fetch_duration = (fetch_end_time - fetch_start_time).total_seconds()
             
-            if data.empty:
-                st.error(f"❌ No data returned for {symbol}")
+            if data is None or data.empty:
+                st.error(f"❌ All methods failed - No data available for {symbol}")
+                st.markdown(f"""
+                **Troubleshooting suggestions:**
+                - Try a different currency pair
+                - Check if {symbol} is a valid forex symbol
+                - Yahoo Finance might be temporarily unavailable
+                - Alternative symbols: {symbol}=X, {symbol[:3]}{symbol[3:]}=X
+                """)
                 return None, None
-                
-            # Process data
+            
+            # Clean and process data
+            data = data.dropna()  # Remove any NaN rows
+            
+            # Handle timezone-aware datetime
+            if hasattr(data.index, 'tz_localize'):
+                try:
+                    data.index = data.index.tz_localize(None)  # Remove timezone
+                except:
+                    data.index = data.index.tz_convert(None)  # Convert timezone
+            
+            # Process data into standard format
             df = pd.DataFrame({
-                'Date': data.index,
-                'Open': data['Open'],
-                'High': data['High'],
-                'Low': data['Low'],
-                'Close': data['Close'],
-                'Volume': data['Volume']
+                'Date': pd.to_datetime(data.index).tz_localize(None) if hasattr(data.index, 'tz') else pd.to_datetime(data.index),
+                'Open': data['Open'].astype(float),
+                'High': data['High'].astype(float),
+                'Low': data['Low'].astype(float),
+                'Close': data['Close'].astype(float),
+                'Volume': data['Volume'].astype(float) if 'Volume' in data.columns else 0
             }).reset_index(drop=True)
+            
+            # Remove any remaining NaN values
+            df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+            
+            if len(df) == 0:
+                st.error(f"❌ No valid price data after cleaning for {symbol}")
+                return None, None
             
             # Verification details
             verification_info = {
@@ -109,15 +170,33 @@ class VerifiablePriceBot:
                 'fetch_duration': fetch_duration,
                 'data_points': len(df),
                 'date_range': f"{df['Date'].min().date()} to {df['Date'].max().date()}",
-                'latest_price': df['Close'].iloc[-1],
+                'latest_price': float(df['Close'].iloc[-1]),
                 'latest_date': df['Date'].iloc[-1],
-                'data_age_hours': (datetime.now() - df['Date'].iloc[-1].to_pydatetime()).total_seconds() / 3600
+                'data_age_hours': (pd.Timestamp.now() - df['Date'].iloc[-1]).total_seconds() / 3600,
+                'data_quality': 'Good' if len(df) > days * 0.7 else 'Limited'
             }
+            
+            st.success(f"✅ Successfully processed {len(df)} data points for {symbol}")
             
             return df, verification_info
             
         except Exception as e:
-            st.error(f"❌ Error fetching data for {symbol}: {str(e)}")
+            fetch_end_time = datetime.now()
+            fetch_duration = (fetch_end_time - fetch_start_time).total_seconds()
+            
+            st.error(f"❌ Critical error fetching data for {symbol}: {str(e)}")
+            st.markdown(f"""
+            **Error Details:**
+            - Symbol: {symbol}
+            - Yahoo Symbol: {yf_symbol}
+            - Fetch Duration: {fetch_duration:.2f}s
+            - Error Type: {type(e).__name__}
+            
+            **Try:**
+            1. Refresh the page
+            2. Select a different currency pair
+            3. Check your internet connection
+            """)
             return None, None
     
     def verify_yahoo_finance_connection(self):
