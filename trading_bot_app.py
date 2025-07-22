@@ -51,6 +51,7 @@ st.markdown("""
 
 # Forex symbols mapping
 FOREX_SYMBOLS = {
+    # Major pairs
     'EURUSD': 'EURUSD=X',
     'GBPUSD': 'GBPUSD=X', 
     'AUDUSD': 'AUDUSD=X',
@@ -60,7 +61,13 @@ FOREX_SYMBOLS = {
     'USDJPY': 'USDJPY=X',
     'EURJPY': 'EURJPY=X',
     'GBPJPY': 'GBPJPY=X',
-    'EURGBP': 'EURGBP=X'
+    'EURGBP': 'EURGBP=X',
+    
+    # Polish Zloty pairs
+    'CHFPLN': 'CHFPLN=X',  # Swiss Franc to Polish Zloty
+    'EURPLN': 'EURPLN=X',  # Euro to Polish Zloty
+    'USDPLN': 'USDPLN=X',  # US Dollar to Polish Zloty
+    'GBPPLN': 'GBPPLN=X'   # British Pound to Polish Zloty
 }
 
 class ForexTradingBot:
