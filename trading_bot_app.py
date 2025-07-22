@@ -315,14 +315,21 @@ def create_chart(df, symbol, days, show_vol, show_piv):
         else:
             fig = go.Figure()
         
-        # Add candlestick chart
+        # Add candlestick chart with improved styling
         candlestick = go.Candlestick(
             x=chart_data['Date'],
             open=chart_data['Open'],
             high=chart_data['High'],
             low=chart_data['Low'],
             close=chart_data['Close'],
-            name=f'{symbol} OHLC'
+            name=f'{symbol} OHLC',
+            increasing_line_color='#26a69a',  # Green for up candles
+            decreasing_line_color='#ef5350',  # Red for down candles
+            increasing_fillcolor='#26a69a',
+            decreasing_fillcolor='#ef5350',
+            line_width=1,  # Thin candle borders
+            increasing_line_width=1,
+            decreasing_line_width=1
         )
         
         if show_vol:
@@ -330,14 +337,22 @@ def create_chart(df, symbol, days, show_vol, show_piv):
         else:
             fig.add_trace(candlestick)
         
-        # Add pivot levels
+        # Add pivot levels with improved positioning
         if show_piv:
             latest_row = chart_data.iloc[-1]
             if pd.notna(latest_row.get('Pivot')):
                 
+                # Calculate chart boundaries for label positioning
+                chart_start = chart_data['Date'].min()
+                chart_end = chart_data['Date'].max()
+                
+                # Extend the right margin for labels by adding time buffer
+                time_diff = chart_end - chart_start
+                label_position = chart_end + time_diff * 0.05  # 5% beyond last candle
+                
                 levels = {
                     'R2': (latest_row.get('R2'), 'red'),
-                    'R1': (latest_row.get('R1'), 'red'),
+                    'R1': (latest_row.get('R1'), 'red'), 
                     'Pivot': (latest_row['Pivot'], 'black'),
                     'S1': (latest_row.get('S1'), 'green'),
                     'S2': (latest_row.get('S2'), 'green')
@@ -345,34 +360,52 @@ def create_chart(df, symbol, days, show_vol, show_piv):
                 
                 for name, (value, color) in levels.items():
                     if pd.notna(value):
+                        # Add the horizontal line
                         hline_args = {
                             'y': value,
-                            'line_dash': 'solid',  # Changed from 'dash' to solid
+                            'line_dash': 'solid',
                             'line_color': color,
-                            'line_width': 1,  # Thin lines
-                            'annotation_text': f'{name}: {value:.5f}',
-                            'annotation_position': "top right",  # Moved to right
-                            'annotation_font_size': 10,
-                            'annotation_font_color': color,
-                            'annotation_bgcolor': 'rgba(255,255,255,0.8)',  # Light background for readability
-                            'annotation_bordercolor': color,
-                            'annotation_borderwidth': 1
+                            'line_width': 1,
                         }
                         if show_vol:
                             fig.add_hline(row=1, col=1, **hline_args)
                         else:
                             fig.add_hline(**hline_args)
+                        
+                        # Add separate annotation positioned away from candles
+                        annotation_args = {
+                            'x': label_position,
+                            'y': value,
+                            'text': f'{name}: {value:.5f}',
+                            'showarrow': False,
+                            'font': dict(size=10, color=color),
+                            'bgcolor': 'rgba(255,255,255,0.9)',
+                            'bordercolor': color,
+                            'borderwidth': 1,
+                            'xanchor': 'left',
+                            'yanchor': 'middle'
+                        }
+                        
+                        if show_vol:
+                            fig.add_annotation(row=1, col=1, **annotation_args)
+                        else:
+                            fig.add_annotation(**annotation_args)
         
-        # Add volume
+        # Add volume with better colors
         if show_vol and 'Volume' in chart_data.columns:
-            colors = ['green' if c >= o else 'red' for c, o in zip(chart_data['Close'], chart_data['Open'])]
+            colors = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(chart_data['Close'], chart_data['Open'])]
             fig.add_trace(
-                go.Bar(x=chart_data['Date'], y=chart_data['Volume'], 
-                      name='Volume', marker_color=colors),
+                go.Bar(
+                    x=chart_data['Date'], 
+                    y=chart_data['Volume'], 
+                    name='Volume', 
+                    marker_color=colors,
+                    opacity=0.7
+                ),
                 row=2, col=1
             )
         
-        # Current price marker
+        # Current price marker with better visibility
         current_price = chart_data['Close'].iloc[-1]
         current_date = chart_data['Date'].iloc[-1]
         
@@ -380,10 +413,16 @@ def create_chart(df, symbol, days, show_vol, show_piv):
             x=[current_date],
             y=[current_price],
             mode='markers+text',
-            marker=dict(size=12, color='orange'),
+            marker=dict(
+                size=10,
+                color='orange',
+                line=dict(width=2, color='white'),
+                symbol='circle'
+            ),
             text=[f'{current_price:.5f}'],
             textposition='top center',
-            name='Current Price'
+            name='Current Price',
+            textfont=dict(size=10, color='orange')
         )
         
         if show_vol:
@@ -391,13 +430,61 @@ def create_chart(df, symbol, days, show_vol, show_piv):
         else:
             fig.add_trace(price_marker)
         
-        # Update layout
+        # Update layout with extended right margin for labels
         fig.update_layout(
             title=f"{symbol} - Current: {current_price:.5f}",
-            height=600 if show_vol else 400,
+            height=600 if show_vol else 450,
             xaxis_rangeslider_visible=False,
-            showlegend=True
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            margin=dict(r=120)  # Extended right margin for pivot labels
         )
+        
+        # Update axes with grid
+        if show_vol:
+            fig.update_xaxes(
+                title_text="Date", 
+                showgrid=True, 
+                gridwidth=0.5, 
+                gridcolor='lightgray',
+                row=2, col=1
+            )
+            fig.update_yaxes(
+                title_text="Price", 
+                showgrid=True, 
+                gridwidth=0.5, 
+                gridcolor='lightgray',
+                row=1, col=1
+            )
+            fig.update_yaxes(
+                title_text="Volume", 
+                showgrid=True, 
+                gridwidth=0.5, 
+                gridcolor='lightgray',
+                row=2, col=1
+            )
+        else:
+            fig.update_xaxes(
+                title_text="Date", 
+                showgrid=True, 
+                gridwidth=0.5, 
+                gridcolor='lightgray'
+            )
+            fig.update_yaxes(
+                title_text="Price", 
+                showgrid=True, 
+                gridwidth=0.5, 
+                gridcolor='lightgray'
+            )
+        
+        # Ensure proper spacing for all candles to show OHLC details
+        fig.update_xaxes(type='category')  # Better candle spacing
         
         return fig
         
