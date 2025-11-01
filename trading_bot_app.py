@@ -32,7 +32,7 @@ for i in range(5):
             f"Para #{i+1}", 
             type=['csv'],
             key=f"file_{i}",
-            help="Plik CSV z danymi historycznymi"
+            help="Plik CSV z danymi historycznymi (Forex lub BTC/Crypto format)"
         )
     with col2:
         name = st.sidebar.text_input(
@@ -69,7 +69,7 @@ threshold = st.sidebar.slider(
 holding_days = st.sidebar.slider(
     "Liczba dni trzymania pozycji",
     min_value=1,
-    max_value=10,
+    max_value=20,
     value=5,
     step=1
 )
@@ -600,7 +600,7 @@ else:
     **Jak używać:**
     1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi lub kryptowalutami
     2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, BTC)
-    3. ⚙️ Ustaw parametry strategii
+    3. ⚙️ Ustaw parametry strategii (lookback, próg, holding 1-20 dni, lewary)
     4. 💰 Wybierz metodę alokacji kapitału
     5. 🚀 Kliknij "Uruchom backtest"
     6. 📊 Analizuj wyniki portfela i poszczególnych par!
@@ -612,6 +612,8 @@ else:
     **Metody alokacji:**
     - **Równomiernie**: Kapitał 10,000 PLN / 3 pary = 3,333 PLN na parę
     - **Pełny kapitał**: 10,000 PLN na każdą parę (wyższe ryzyko/zwrot)
+    
+    **Duration:** 1-20 dni trzymania pozycji
     """)
     
     # Przykładowy format
@@ -648,8 +650,9 @@ st.sidebar.info(f"""
 **Multi-Currency Portfolio** łączy sygnały z różnych par walutowych 
 i kryptowalut w jeden zdywersyfikowany portfel.
 
-**Duration:** {holding_days} dni
+**Duration:** {holding_days} dni (1-20)
 **Pivot Points:** Obliczone z {lookback_days} dni wstecz
+**Lewar x5:** Wyróżniony złotym kolorem ⭐
 """)
 
 st.sidebar.markdown("---")
