@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 
 # Konfiguracja strony
@@ -42,6 +42,14 @@ threshold = st.sidebar.slider(
     max_value=3.0,
     value=0.5,
     step=0.1
+)
+
+holding_days = st.sidebar.slider(
+    "Liczba dni trzymania pozycji",
+    min_value=1,
+    max_value=10,
+    value=5,
+    step=1
 )
 
 leverages = st.sidebar.multiselect(
@@ -98,8 +106,8 @@ def calculate_pivot_points(high, low, close):
     s3 = low - 2 * (high - pp)
     return pp, r1, r2, r3, s1, s2, s3
 
-def run_backtest(df, threshold_pct, lookback, leverage, initial_capital):
-    """Uruchom backtest"""
+def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding_days):
+    """Uruchom backtest z duration N dni"""
     mondays = df[df['DayOfWeek'] == 0].copy()
     trades = []
     
@@ -119,31 +127,31 @@ def run_backtest(df, threshold_pct, lookback, leverage, initial_capital):
             buy_threshold = pp * (1 - threshold_pct/100)
             sell_threshold = pp * (1 + threshold_pct/100)
             
-            future_dates = df[df['Date'] > monday_date]
-            friday = future_dates[future_dates['DayOfWeek'] == 4].head(1)
+            # Znajdź datę wyjścia (N dni roboczych później)
+            future_dates = df[df['Date'] > monday_date].head(holding_days)
             
-            if not friday.empty:
-                friday_date = friday.iloc[0]['Date']
-                friday_price = friday.iloc[0]['Price']
+            if len(future_dates) >= holding_days:
+                exit_date = future_dates.iloc[holding_days - 1]['Date']
+                exit_price = future_dates.iloc[holding_days - 1]['Price']
                 
                 signal = None
                 pnl_pct = 0
                 
                 if monday_price <= buy_threshold:
                     signal = 'BUY'
-                    pnl_pct = ((friday_price - monday_price) / monday_price) * 100
+                    pnl_pct = ((exit_price - monday_price) / monday_price) * 100
                 elif monday_price >= sell_threshold:
                     signal = 'SELL'
-                    pnl_pct = ((monday_price - friday_price) / monday_price) * 100
+                    pnl_pct = ((monday_price - exit_price) / monday_price) * 100
                 
                 if signal:
                     pnl_leveraged = pnl_pct * leverage
                     trades.append({
-                        'Monday_Date': monday_date,
-                        'Friday_Date': friday_date,
+                        'Entry_Date': monday_date,
+                        'Exit_Date': exit_date,
                         'Signal': signal,
                         'Entry_Price': monday_price,
-                        'Exit_Price': friday_price,
+                        'Exit_Price': exit_price,
                         'PnL_%': pnl_pct,
                         'PnL_Leveraged_%': pnl_leveraged,
                         'Year': monday_date.year,
@@ -220,7 +228,7 @@ if uploaded_file is not None:
             
             for i, lev in enumerate(leverages):
                 status_text.text(f"Testowanie lewaru {lev}x...")
-                trades = run_backtest(df, threshold, lookback_days, lev, initial_capital)
+                trades = run_backtest(df, threshold, lookback_days, lev, initial_capital, holding_days)
                 if trades is not None:
                     metrics = calculate_metrics(trades, initial_capital)
                     results[lev] = {'trades': trades, 'metrics': metrics}
@@ -267,18 +275,22 @@ if uploaded_file is not None:
                 
                 comparison_df = pd.DataFrame(comparison_data)
                 
-                # Podświetl najlepszy ROI
-                def highlight_best_roi(row):
-                    if row['ROI (%)'] == comparison_df['ROI (%)'].max() and row['ROI (%)'] > 0:
+                # Podświetl najlepszy ROI i lewar x5
+                def highlight_rows(row):
+                    if row['Lewar'] == '5x':
+                        return ['background-color: #FFD700; font-weight: bold'] * len(row)
+                    elif row['ROI (%)'] == comparison_df['ROI (%)'].max() and row['ROI (%)'] > 0:
                         return ['background-color: #90EE90'] * len(row)
                     elif row['ROI (%)'] < 0:
                         return ['background-color: #FFB6C1'] * len(row)
                     return [''] * len(row)
                 
                 st.dataframe(
-                    comparison_df.style.apply(highlight_best_roi, axis=1),
+                    comparison_df.style.apply(highlight_rows, axis=1),
                     use_container_width=True
                 )
+                
+                st.caption("🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny")
                 
                 # Wykresy
                 st.header("📈 Wizualizacje")
@@ -288,8 +300,12 @@ if uploaded_file is not None:
                 for lev in leverages:
                     if results[lev] is not None:
                         trades = results[lev]['trades']
-                        ax1.plot(trades['Monday_Date'], trades['Capital'], 
-                                label=f'Lewar {lev}x', linewidth=2, marker='o', markersize=3)
+                        linewidth = 3 if lev == 5 else 2
+                        alpha = 1.0 if lev == 5 else 0.7
+                        ax1.plot(trades['Entry_Date'], trades['Capital'], 
+                                label=f'Lewar {lev}x' + (' ⭐' if lev == 5 else ''), 
+                                linewidth=linewidth, marker='o', markersize=4 if lev == 5 else 3,
+                                alpha=alpha)
                 
                 ax1.axhline(y=initial_capital, color='black', linestyle='--', 
                            linewidth=1, alpha=0.5, label='Kapitał początkowy')
@@ -311,18 +327,22 @@ if uploaded_file is not None:
                                     for lev in leverages if results[lev] is not None]
                     if valid_results:
                         levs, rois = zip(*valid_results)
-                        colors = ['green' if r > 0 else 'red' for r in rois]
-                        bars = ax2.bar([f"{l}x" for l in levs], rois, color=colors, alpha=0.7, edgecolor='black')
+                        colors = ['gold' if l == 5 else ('green' if r > 0 else 'red') 
+                                 for l, r in zip(levs, rois)]
+                        bars = ax2.bar([f"{l}x" for l in levs], rois, color=colors, 
+                                      alpha=0.8, edgecolor='black', linewidth=2)
                         ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
                         ax2.set_title('ROI - Porównanie', fontsize=12, fontweight='bold')
                         ax2.set_ylabel('ROI (%)')
                         ax2.grid(True, alpha=0.3, axis='y')
                         
-                        for bar in bars:
+                        for bar, lev in zip(bars, levs):
                             height = bar.get_height()
+                            weight = 'bold' if lev == 5 else 'normal'
                             ax2.text(bar.get_x() + bar.get_width()/2., height,
                                     f'{height:.1f}%', ha='center', 
-                                    va='bottom' if height > 0 else 'top', fontweight='bold')
+                                    va='bottom' if height > 0 else 'top', 
+                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
                     st.pyplot(fig2)
                 
                 with col2:
@@ -331,15 +351,25 @@ if uploaded_file is not None:
                                     for lev in leverages if results[lev] is not None]
                     if valid_results:
                         levs, dds = zip(*valid_results)
-                        ax3.bar([f"{l}x" for l in levs], dds, color='orange', alpha=0.7, edgecolor='black')
+                        colors = ['gold' if l == 5 else 'orange' for l in levs]
+                        bars = ax3.bar([f"{l}x" for l in levs], dds, color=colors, 
+                                      alpha=0.8, edgecolor='black', linewidth=2)
                         ax3.set_title('Max Drawdown - Porównanie', fontsize=12, fontweight='bold')
                         ax3.set_ylabel('Max Drawdown (%)')
                         ax3.grid(True, alpha=0.3, axis='y')
+                        
+                        for bar, lev in zip(bars, levs):
+                            height = bar.get_height()
+                            weight = 'bold' if lev == 5 else 'normal'
+                            ax3.text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height:.1f}%', ha='center', va='bottom',
+                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
                     st.pyplot(fig3)
                 
                 # Szczegóły dla wybranego lewaru
                 st.header("🔍 Szczegóły")
-                selected_lev = st.selectbox("Wybierz lewar do szczegółowej analizy:", leverages)
+                selected_lev = st.selectbox("Wybierz lewar do szczegółowej analizy:", leverages, 
+                                           index=leverages.index(5) if 5 in leverages else 0)
                 
                 if results[selected_lev] is not None:
                     trades = results[selected_lev]['trades']
@@ -369,10 +399,10 @@ if uploaded_file is not None:
                     
                     # Tabela transakcji
                     st.subheader("📋 Wszystkie transakcje")
-                    trades_display = trades[['Monday_Date', 'Friday_Date', 'Signal', 
+                    trades_display = trades[['Entry_Date', 'Exit_Date', 'Signal', 
                                             'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
-                    trades_display['Monday_Date'] = trades_display['Monday_Date'].dt.strftime('%Y-%m-%d')
-                    trades_display['Friday_Date'] = trades_display['Friday_Date'].dt.strftime('%Y-%m-%d')
+                    trades_display['Entry_Date'] = trades_display['Entry_Date'].dt.strftime('%Y-%m-%d')
+                    trades_display['Exit_Date'] = trades_display['Exit_Date'].dt.strftime('%Y-%m-%d')
                     trades_display = trades_display.round(4)
                     st.dataframe(trades_display, use_container_width=True)
                     
@@ -381,7 +411,7 @@ if uploaded_file is not None:
                     st.download_button(
                         label="💾 Pobierz szczegóły transakcji (CSV)",
                         data=csv,
-                        file_name=f"backtest_leverage_{selected_lev}x.csv",
+                        file_name=f"backtest_leverage_{selected_lev}x_{holding_days}days.csv",
                         mime="text/csv"
                     )
                 else:
@@ -389,12 +419,12 @@ if uploaded_file is not None:
 
 else:
     # Instrukcja użycia
-    st.info("""
+    st.info(f"""
     ### 👋 Witaj w Pivot Points Backtest Tool!
     
     **Jak używać:**
     1. 📁 Wgraj plik CSV z danymi historycznymi w lewym panelu
-    2. ⚙️ Ustaw parametry strategii (lookback, próg, lewary)
+    2. ⚙️ Ustaw parametry strategii (lookback, próg, lewary, duration)
     3. 🚀 Kliknij "Uruchom backtest"
     4. 📊 Analizuj wyniki i porównaj różne lewary!
     
@@ -407,7 +437,8 @@ else:
     - Oblicza pivot points z ostatnich N dni przed każdym poniedziałkiem
     - Kupuje gdy cena ≤ X% poniżej Pivot Point
     - Sprzedaje gdy cena ≥ X% powyżej Pivot Point
-    - Zamyka pozycje w najbliższy piątek
+    - Zamyka pozycje po {holding_days} dniach roboczych
+    - **Lewar x5 jest wyróżniony złotym kolorem** ⭐
     """)
     
     # Przykładowy format danych
@@ -424,10 +455,12 @@ else:
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 O strategii")
-st.sidebar.info("""
+st.sidebar.info(f"""
 **Pivot Points** to poziomy wsparcia i oporu obliczone na podstawie 
 historycznych cen (High, Low, Close). Strategia wykorzystuje odchylenia 
 od tych poziomów do generowania sygnałów kupna i sprzedaży.
+
+**Duration:** Pozycje są zamykane po {holding_days} dniach roboczych.
 """)
 
 st.sidebar.markdown("---")
