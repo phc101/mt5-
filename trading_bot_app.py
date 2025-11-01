@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MT5 Signal Generator with Dynamic Charts
-Fixed version with proper error handling
+Fixed version with proper error handling + BTC/USD support
 """
 
 import pandas as pd
@@ -67,7 +67,10 @@ FOREX_SYMBOLS = {
     'CHFPLN': 'CHFPLN=X',  # Swiss Franc to Polish Zloty
     'EURPLN': 'EURPLN=X',  # Euro to Polish Zloty
     'USDPLN': 'USDPLN=X',  # US Dollar to Polish Zloty
-    'GBPPLN': 'GBPPLN=X'   # British Pound to Polish Zloty
+    'GBPPLN': 'GBPPLN=X',  # British Pound to Polish Zloty
+    
+    # Cryptocurrency
+    'BTCUSD': 'BTC-USD'    # Bitcoin to US Dollar
 }
 
 class ForexTradingBot:
@@ -75,7 +78,7 @@ class ForexTradingBot:
         self.lookback_days = 7
         
     def get_forex_data(self, symbol, days=30):
-        """Fetch forex data with robust error handling including PLN pairs"""
+        """Fetch forex data with robust error handling including PLN pairs and BTC"""
         try:
             yf_symbol = FOREX_SYMBOLS.get(symbol, f"{symbol}=X")
             ticker = yf.Ticker(yf_symbol)
@@ -200,7 +203,8 @@ class ForexTradingBot:
                 'latest_price': float(df['Close'].iloc[-1]),
                 'latest_date': df['Date'].iloc[-1],
                 'fetch_time': datetime.now(),
-                'is_pln_pair': 'PLN' in symbol
+                'is_pln_pair': 'PLN' in symbol,
+                'is_crypto': 'BTC' in symbol or 'ETH' in symbol
             }
             
             return df, verification
@@ -259,7 +263,7 @@ bot = get_bot()
 
 # Header
 st.title("📈 MT5 Trading Signals - Dynamic Charts")
-st.markdown("**Live Forex data with Pivot Points analysis**")
+st.markdown("**Live Forex & Crypto data with Pivot Points analysis**")
 
 # Sidebar configuration
 st.sidebar.header("⚙️ Configuration")
@@ -268,13 +272,14 @@ st.sidebar.header("⚙️ Configuration")
 major_pairs = ['EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY']
 cross_pairs = ['EURJPY', 'GBPJPY', 'EURGBP']
 pln_pairs = ['EURPLN', 'USDPLN', 'GBPPLN', 'CHFPLN']
+crypto_pairs = ['BTCUSD']
 
 # Create expandable sections for different pair types
 st.sidebar.markdown("### Currency Pairs")
 
 pair_category = st.sidebar.radio(
     "Select Category:",
-    ["🌍 Major Pairs", "🔄 Cross Pairs", "🇵🇱 PLN Pairs"],
+    ["🌍 Major Pairs", "🔄 Cross Pairs", "🇵🇱 PLN Pairs", "₿ Crypto"],
     index=0
 )
 
@@ -282,9 +287,12 @@ if pair_category == "🌍 Major Pairs":
     selected_symbol = st.sidebar.selectbox("Select Major Pair:", major_pairs, index=0)
 elif pair_category == "🔄 Cross Pairs":
     selected_symbol = st.sidebar.selectbox("Select Cross Pair:", cross_pairs, index=0)
-else:  # PLN Pairs
+elif pair_category == "🇵🇱 PLN Pairs":
     selected_symbol = st.sidebar.selectbox("Select PLN Pair:", pln_pairs, index=0)
     st.sidebar.info("💡 PLN pairs may have limited data availability")
+else:  # Crypto
+    selected_symbol = st.sidebar.selectbox("Select Crypto Pair:", crypto_pairs, index=0)
+    st.sidebar.info("₿ Bitcoin trades 24/7")
 
 # Chart type selection
 chart_type = st.sidebar.radio(
@@ -310,6 +318,17 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
         
         # Get recent data
         chart_data = df.tail(days)
+        
+        # Determine decimal places based on instrument
+        if 'BTC' in symbol:
+            decimal_places = 2  # Bitcoin uses 2 decimals
+            price_format = '.2f'
+        elif 'JPY' in symbol:
+            decimal_places = 3  # JPY pairs use 3 decimals
+            price_format = '.3f'
+        else:
+            decimal_places = 5  # Standard forex uses 5 decimals
+            price_format = '.5f'
         
         if show_vol:
             fig = make_subplots(
@@ -356,7 +375,7 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
                 line=dict(color='#1f77b4', width=2),
                 hovertemplate='<b>%{fullData.name}</b><br>' +
                             'Date: %{x}<br>' +
-                            'Price: %{y:.5f}<br>' +
+                            f'Price: %{{y:{price_format}}}<br>' +
                             '<extra></extra>'
             )
             
@@ -404,7 +423,7 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
                         annotation_args = {
                             'x': label_position,
                             'y': value,
-                            'text': f'{name}: {value:.5f}',
+                            'text': f'{name}: {value:{price_format}}',
                             'showarrow': False,
                             'font': dict(size=10, color=color),
                             'bgcolor': 'rgba(255,255,255,0.9)',
@@ -447,7 +466,7 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
                 line=dict(width=2, color='white'),
                 symbol='circle'
             ),
-            text=[f'{current_price:.5f}'],
+            text=[f'{current_price:{price_format}}'],
             textposition='top center',
             name='Current Price',
             textfont=dict(size=10, color='orange')
@@ -459,7 +478,7 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
             fig.add_trace(price_marker)
         
         # Update layout with extended right margin for labels
-        chart_title = f"{symbol} - {chart_type.title()} Chart - Current: {current_price:.5f}"
+        chart_title = f"{symbol} - {chart_type.title()} Chart - Current: {current_price:{price_format}}"
         
         fig.update_layout(
             title=chart_title,
@@ -531,6 +550,14 @@ def create_line_chart(df, symbol, days, show_piv):
         
         chart_data = df.tail(days)
         
+        # Determine decimal places based on instrument
+        if 'BTC' in symbol:
+            price_format = '.2f'
+        elif 'JPY' in symbol:
+            price_format = '.3f'
+        else:
+            price_format = '.5f'
+        
         fig = go.Figure()
         
         # Add line chart for closing prices
@@ -543,7 +570,7 @@ def create_line_chart(df, symbol, days, show_piv):
             marker=dict(size=4, color='#1f77b4'),
             hovertemplate='<b>%{fullData.name}</b><br>' +
                         'Date: %{x}<br>' +
-                        'Price: %{y:.5f}<br>' +
+                        f'Price: %{{y:{price_format}}}<br>' +
                         '<extra></extra>'
         )
         
@@ -581,7 +608,7 @@ def create_line_chart(df, symbol, days, show_piv):
                         fig.add_annotation(
                             x=label_position,
                             y=value,
-                            text=f'{name}: {value:.5f}',
+                            text=f'{name}: {value:{price_format}}',
                             showarrow=False,
                             font=dict(size=10, color=color),
                             bgcolor='rgba(255,255,255,0.9)',
@@ -600,7 +627,7 @@ def create_line_chart(df, symbol, days, show_piv):
             y=[current_price],
             mode='markers+text',
             marker=dict(size=12, color='orange', line=dict(width=2, color='white')),
-            text=[f'{current_price:.5f}'],
+            text=[f'{current_price:{price_format}}'],
             textposition='top center',
             name='Current Price',
             textfont=dict(size=10, color='orange')
@@ -608,7 +635,7 @@ def create_line_chart(df, symbol, days, show_piv):
         
         # Update layout
         fig.update_layout(
-            title=f"{symbol} - Line Chart - Current: {current_price:.5f}",
+            title=f"{symbol} - Line Chart - Current: {current_price:{price_format}}",
             height=400,
             xaxis_rangeslider_visible=False,
             showlegend=True,
@@ -647,15 +674,23 @@ if df is not None and verification:
     latest_row = df_with_pivots.iloc[-1]
     current_price = latest_row['Close']
     
+    # Determine price format
+    if 'BTC' in selected_symbol:
+        price_format = '.2f'
+    elif 'JPY' in selected_symbol:
+        price_format = '.3f'
+    else:
+        price_format = '.5f'
+    
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Current Price", f"{current_price:.5f}")
+        st.metric("Current Price", f"{current_price:{price_format}}")
     
     with col2:
         if pd.notna(latest_row.get('Pivot')):
             pivot_diff = current_price - latest_row['Pivot']
-            st.metric("vs Pivot", f"{pivot_diff:+.5f}")
+            st.metric("vs Pivot", f"{pivot_diff:+{price_format}}")
         else:
             st.metric("vs Pivot", "N/A")
     
@@ -666,6 +701,8 @@ if df is not None and verification:
         st.metric("Latest Date", verification['latest_date'].strftime('%Y-%m-%d'))
         if verification.get('is_pln_pair', False):
             st.caption("🇵🇱 PLN Pair")
+        if verification.get('is_crypto', False):
+            st.caption("₿ Crypto")
     
     # Signal analysis
     if pd.notna(latest_row.get('S2')) and pd.notna(latest_row.get('R2')):
@@ -677,29 +714,29 @@ if df is not None and verification:
         if current_price < latest_row['S2']:
             signal_type = "🟢 BUY SIGNAL"
             signal_strength = "STRONG"
-            signal_reason = f"Price {current_price:.5f} below S2 level {latest_row['S2']:.5f}"
+            signal_reason = f"Price {current_price:{price_format}} below S2 level {latest_row['S2']:{price_format}}"
             css_class = "signal-strong"
         elif current_price > latest_row['R2']:
             signal_type = "🔴 SELL SIGNAL"
             signal_strength = "STRONG"
-            signal_reason = f"Price {current_price:.5f} above R2 level {latest_row['R2']:.5f}"
+            signal_reason = f"Price {current_price:{price_format}} above R2 level {latest_row['R2']:{price_format}}"
             css_class = "signal-strong"
         elif current_price < latest_row.get('S1', latest_row['Pivot']):
             signal_type = "🟡 Weak Buy"
             signal_strength = "WEAK"
-            signal_reason = f"Price {current_price:.5f} below S1"
+            signal_reason = f"Price {current_price:{price_format}} below S1"
             css_class = "signal-weak"
         elif current_price > latest_row.get('R1', latest_row['Pivot']):
             signal_type = "🟡 Weak Sell"
             signal_strength = "WEAK"
-            signal_reason = f"Price {current_price:.5f} above R1"
+            signal_reason = f"Price {current_price:{price_format}} above R1"
             css_class = "signal-weak"
         
         if signal_type:
             st.markdown(f'<div class="{css_class}"><h4>{signal_type}</h4><p>{signal_reason}</p></div>', 
                        unsafe_allow_html=True)
         else:
-            st.info(f"**No Signal** - Price {current_price:.5f} between pivot levels")
+            st.info(f"**No Signal** - Price {current_price:{price_format}} between pivot levels")
         
         # Pivot levels table
         st.markdown("#### 📊 Current Pivot Levels")
@@ -711,7 +748,7 @@ if df is not None and verification:
                 distance = ((value - current_price) / current_price * 100)
                 levels_data.append({
                     'Level': level_name,
-                    'Value': f"{value:.5f}",
+                    'Value': f"{value:{price_format}}",
                     'Distance': f"{distance:+.2f}%"
                 })
         
@@ -724,7 +761,7 @@ if df is not None and verification:
         st.markdown(f"""
         **Symbol:** {verification['symbol']} ({verification['yahoo_symbol']})  
         **Data Points:** {verification['data_points']}  
-        **Latest Price:** {verification['latest_price']:.5f}  
+        **Latest Price:** {verification['latest_price']:{price_format}}  
         **Fetch Time:** {verification['fetch_time'].strftime('%H:%M:%S')}  
         **Verify at:** https://finance.yahoo.com/quote/{verification['yahoo_symbol']}
         """)
@@ -732,8 +769,17 @@ if df is not None and verification:
         # Show recent data
         recent_data = df_with_pivots.tail(5)[['Date', 'Open', 'High', 'Low', 'Close']].copy()
         recent_data['Date'] = recent_data['Date'].dt.strftime('%Y-%m-%d')
+        
+        # Round to appropriate decimals
+        if 'BTC' in selected_symbol:
+            decimals = 2
+        elif 'JPY' in selected_symbol:
+            decimals = 3
+        else:
+            decimals = 5
+            
         for col in ['Open', 'High', 'Low', 'Close']:
-            recent_data[col] = recent_data[col].round(5)
+            recent_data[col] = recent_data[col].round(decimals)
         st.dataframe(recent_data, use_container_width=True, hide_index=True)
 
 else:
@@ -754,5 +800,6 @@ st.markdown("---")
 st.markdown(f"""
 **🕐 Current Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
 **⚠️ For Demo Trading Only** - Always test on demo accounts first  
-**📊 Data Source:** Yahoo Finance with ~15min delay
+**📊 Data Source:** Yahoo Finance with ~15min delay  
+**₿ Crypto:** Bitcoin trades 24/7 with real-time data
 """)
