@@ -70,7 +70,11 @@ FOREX_SYMBOLS = {
     'GBPPLN': 'GBPPLN=X',  # British Pound to Polish Zloty
     
     # Cryptocurrency
-    'BTCUSD': 'BTC-USD'    # Bitcoin to US Dollar
+    'BTCUSD': 'BTC-USD',   # Bitcoin to US Dollar
+    'ETHUSD': 'ETH-USD',   # Ethereum to US Dollar
+    'XRPUSD': 'XRP-USD',   # Ripple to US Dollar
+    'ADAUSD': 'ADA-USD',   # Cardano to US Dollar
+    'SOLUSD': 'SOL-USD'    # Solana to US Dollar
 }
 
 class ForexTradingBot:
@@ -81,21 +85,54 @@ class ForexTradingBot:
         """Fetch forex data with robust error handling including PLN pairs and BTC"""
         try:
             yf_symbol = FOREX_SYMBOLS.get(symbol, f"{symbol}=X")
-            ticker = yf.Ticker(yf_symbol)
-            
-            # Try different methods to fetch data
             data = None
             
-            # Method 1: Using period
-            try:
-                data = ticker.history(period=f"{days}d", interval="1d")
-                if not data.empty:
-                    st.success(f"✅ Fetched {len(data)} days of data for {symbol}")
-            except Exception as e1:
-                st.warning(f"Method 1 failed: {str(e1)[:100]}...")
+            # Special handling for crypto - try multiple symbol formats
+            if any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']):
+                # Extract base crypto symbol
+                crypto_base = None
+                for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']:
+                    if crypto in symbol:
+                        crypto_base = crypto
+                        break
+                
+                crypto_symbols = [
+                    f'{crypto_base}-USD',
+                    f'{crypto_base}USD',
+                    yf_symbol,
+                    symbol
+                ]
+                
+                for crypto_sym in crypto_symbols:
+                    try:
+                        ticker = yf.Ticker(crypto_sym)
+                        data = ticker.history(period=f"{days}d", interval="1d")
+                        if not data.empty:
+                            st.success(f"✅ Fetched {len(data)} days of data for {symbol} using {crypto_sym}")
+                            yf_symbol = crypto_sym
+                            break
+                    except:
+                        continue
+                
+                if data is None or data.empty:
+                    st.error(f"❌ Could not fetch crypto data for {symbol}")
+                    st.info("💡 Try: EURUSD or GBPUSD for testing")
+                    return None, None
+            else:
+                ticker = yf.Ticker(yf_symbol)
+                
+                # Try different methods to fetch data
+                
+                # Method 1: Using period
+                try:
+                    data = ticker.history(period=f"{days}d", interval="1d")
+                    if not data.empty:
+                        st.success(f"✅ Fetched {len(data)} days of data for {symbol}")
+                except Exception as e1:
+                    st.warning(f"Method 1 failed: {str(e1)[:100]}...")
             
-            # Method 2: Using date range if Method 1 failed
-            if data is None or data.empty:
+            # Method 2: Using date range if Method 1 failed (only for non-crypto)
+            if (data is None or data.empty) and not any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']):
                 try:
                     end_date = datetime.now()
                     start_date = end_date - timedelta(days=days + 5)
@@ -204,7 +241,7 @@ class ForexTradingBot:
                 'latest_date': df['Date'].iloc[-1],
                 'fetch_time': datetime.now(),
                 'is_pln_pair': 'PLN' in symbol,
-                'is_crypto': 'BTC' in symbol or 'ETH' in symbol
+                'is_crypto': any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL'])
             }
             
             return df, verification
@@ -272,7 +309,7 @@ st.sidebar.header("⚙️ Configuration")
 major_pairs = ['EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY']
 cross_pairs = ['EURJPY', 'GBPJPY', 'EURGBP']
 pln_pairs = ['EURPLN', 'USDPLN', 'GBPPLN', 'CHFPLN']
-crypto_pairs = ['BTCUSD']
+crypto_pairs = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'ADAUSD', 'SOLUSD']
 
 # Create expandable sections for different pair types
 st.sidebar.markdown("### Currency Pairs")
@@ -292,7 +329,7 @@ elif pair_category == "🇵🇱 PLN Pairs":
     st.sidebar.info("💡 PLN pairs may have limited data availability")
 else:  # Crypto
     selected_symbol = st.sidebar.selectbox("Select Crypto Pair:", crypto_pairs, index=0)
-    st.sidebar.info("₿ Bitcoin trades 24/7")
+    st.sidebar.info("₿ Crypto trades 24/7 with real-time data")
 
 # Chart type selection
 chart_type = st.sidebar.radio(
@@ -320,9 +357,12 @@ def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick")
         chart_data = df.tail(days)
         
         # Determine decimal places based on instrument
-        if 'BTC' in symbol:
-            decimal_places = 2  # Bitcoin uses 2 decimals
+        if any(crypto in symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
+            decimal_places = 2  # Most crypto use 2 decimals
             price_format = '.2f'
+        elif 'XRP' in symbol:
+            decimal_places = 4  # XRP uses more decimals (lower price)
+            price_format = '.4f'
         elif 'JPY' in symbol:
             decimal_places = 3  # JPY pairs use 3 decimals
             price_format = '.3f'
@@ -551,8 +591,10 @@ def create_line_chart(df, symbol, days, show_piv):
         chart_data = df.tail(days)
         
         # Determine decimal places based on instrument
-        if 'BTC' in symbol:
+        if any(crypto in symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
             price_format = '.2f'
+        elif 'XRP' in symbol:
+            price_format = '.4f'
         elif 'JPY' in symbol:
             price_format = '.3f'
         else:
@@ -675,8 +717,10 @@ if df is not None and verification:
     current_price = latest_row['Close']
     
     # Determine price format
-    if 'BTC' in selected_symbol:
+    if any(crypto in selected_symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
         price_format = '.2f'
+    elif 'XRP' in selected_symbol:
+        price_format = '.4f'
     elif 'JPY' in selected_symbol:
         price_format = '.3f'
     else:
@@ -771,8 +815,10 @@ if df is not None and verification:
         recent_data['Date'] = recent_data['Date'].dt.strftime('%Y-%m-%d')
         
         # Round to appropriate decimals
-        if 'BTC' in selected_symbol:
+        if any(crypto in selected_symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
             decimals = 2
+        elif 'XRP' in selected_symbol:
+            decimals = 4
         elif 'JPY' in selected_symbol:
             decimals = 3
         else:
