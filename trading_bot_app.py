@@ -337,94 +337,108 @@ if len(uploaded_files) > 0:
             status_text.empty()
             progress_bar.empty()
             
-            # WYNIKI - PORTFEL
-            st.header("🎯 Wyniki Portfela (Wszystkie pary razem)")
+            # ============================================
+            # SEKCJA 1: WYNIKI KAŻDEJ PARY OSOBNO
+            # ============================================
+            st.header("📈 WYNIKI POSZCZEGÓLNYCH PAR")
+            st.markdown("---")
             
-            if not portfolio_results or all(v is None for v in portfolio_results.values()):
-                st.warning("⚠️ Brak transakcji w portfelu")
-            else:
-                # Tabela porównawcza portfela
-                portfolio_comparison = []
-                for lev in leverages:
-                    if portfolio_results[lev] is not None:
-                        m = portfolio_results[lev]['metrics']
-                        portfolio_comparison.append({
-                            'Lewar': f"{lev}x",
-                            'Transakcje': m['num_trades'],
-                            'ROI (%)': round(m['roi'], 2),
-                            'Kapitał końcowy': f"{m['final_capital']:,.2f}",
-                            'Zysk/Strata': f"{m['profit_loss']:+,.2f}",
-                            'Win Rate (%)': round(m['win_rate'], 1),
-                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
-                        })
-                
-                portfolio_df = pd.DataFrame(portfolio_comparison)
-                
-                def highlight_portfolio(row):
-                    if row['Lewar'] == '5x':
-                        return ['background-color: #FFD700; font-weight: bold'] * len(row)
-                    elif row['ROI (%)'] == portfolio_df['ROI (%)'].max() and row['ROI (%)'] > 0:
-                        return ['background-color: #90EE90'] * len(row)
-                    elif row['ROI (%)'] < 0:
-                        return ['background-color: #FFB6C1'] * len(row)
-                    return [''] * len(row)
-                
-                st.dataframe(
-                    portfolio_df.style.apply(highlight_portfolio, axis=1),
-                    use_container_width=True
-                )
-                
-                st.caption(f"🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny | "
-                          f"Alokacja: {capital_per_pair}")
-                
-                # Wykres kapitału portfela
-                st.subheader("📈 Kapitał Portfela w czasie")
-                fig_portfolio, ax_portfolio = plt.subplots(figsize=(14, 7))
-                
-                for lev in leverages:
-                    if portfolio_results[lev] is not None:
-                        trades = portfolio_results[lev]['trades']
-                        linewidth = 3 if lev == 5 else 2
-                        alpha = 1.0 if lev == 5 else 0.7
-                        ax_portfolio.plot(trades['Entry_Date'], trades['Capital'], 
-                                label=f'Lewar {lev}x' + (' ⭐' if lev == 5 else ''), 
-                                linewidth=linewidth, marker='o', markersize=4 if lev == 5 else 3,
-                                alpha=alpha)
-                
-                ax_portfolio.axhline(y=initial_capital, color='black', linestyle='--', 
-                           linewidth=1, alpha=0.5, label='Kapitał początkowy')
-                ax_portfolio.set_title('Wartość Portfela Multi-Currency', fontsize=16, fontweight='bold')
-                ax_portfolio.set_xlabel('Data', fontsize=12)
-                ax_portfolio.set_ylabel('Kapitał (PLN)', fontsize=12)
-                ax_portfolio.legend(fontsize=10)
-                ax_portfolio.grid(True, alpha=0.3)
-                ax_portfolio.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-                plt.xticks(rotation=45)
-                st.pyplot(fig_portfolio)
-            
-            # WYNIKI - POSZCZEGÓLNE PARY
-            st.header("📊 Wyniki poszczególnych par")
-            
-            selected_lev_comparison = st.selectbox(
-                "Wybierz lewar do porównania par:",
+            # Wybór lewaru dla porównania par
+            selected_lev_pairs = st.selectbox(
+                "🎚️ Wybierz lewar do analizy par:",
                 leverages,
-                index=leverages.index(5) if 5 in leverages else 0
+                index=leverages.index(5) if 5 in leverages else 0,
+                key="lev_pairs"
             )
             
-            if results_by_pair[selected_lev_comparison]:
-                comparison_by_pair = []
-                
+            if results_by_pair[selected_lev_pairs]:
+                # Dla każdej pary osobny panel
                 for name in pair_names:
-                    if name in results_by_pair[selected_lev_comparison] and results_by_pair[selected_lev_comparison][name] is not None:
-                        m = results_by_pair[selected_lev_comparison][name]['metrics']
+                    if name in results_by_pair[selected_lev_pairs] and results_by_pair[selected_lev_pairs][name] is not None:
+                        
+                        st.subheader(f"💱 {name}")
+                        
+                        trades = results_by_pair[selected_lev_pairs][name]['trades']
+                        m = results_by_pair[selected_lev_pairs][name]['metrics']
+                        
+                        # Metryki w 5 kolumnach
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric("Transakcje", m['num_trades'])
+                        with col2:
+                            st.metric("ROI", f"{m['roi']:.2f}%", 
+                                     delta=f"{m['profit_loss']:+,.0f} PLN")
+                        with col3:
+                            st.metric("Win Rate", f"{m['win_rate']:.1f}%")
+                        with col4:
+                            st.metric("Kapitał końcowy", f"{m['final_capital']:,.0f} PLN")
+                        with col5:
+                            st.metric("Max Drawdown", f"{m['max_drawdown']:.2f}%")
+                        
+                        # Mini wykres kapitału
+                        fig_mini, ax_mini = plt.subplots(figsize=(12, 3))
+                        color = 'green' if m['roi'] > 0 else 'red'
+                        ax_mini.plot(trades['Entry_Date'], trades['Capital'], 
+                                    color=color, linewidth=2, marker='o', markersize=3)
+                        
+                        if capital_per_pair == "Równomiernie na wszystkie pary":
+                            cap_for_pair = initial_capital / len(all_data)
+                        else:
+                            cap_for_pair = initial_capital
+                        
+                        ax_mini.axhline(y=cap_for_pair, color='gray', linestyle='--', 
+                                       linewidth=1, alpha=0.5)
+                        ax_mini.set_ylabel('Kapitał (PLN)', fontsize=9)
+                        ax_mini.grid(True, alpha=0.3)
+                        ax_mini.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                        plt.xticks(rotation=45, fontsize=8)
+                        st.pyplot(fig_mini)
+                        plt.close()
+                        
+                        # Tabela z ostatnimi transakcjami
+                        with st.expander(f"📋 Ostatnie 10 transakcji - {name}"):
+                            trades_display = trades[['Entry_Date', 'Exit_Date', 'Signal', 
+                                                    'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].tail(10).copy()
+                            trades_display['Entry_Date'] = trades_display['Entry_Date'].dt.strftime('%Y-%m-%d')
+                            trades_display['Exit_Date'] = trades_display['Exit_Date'].dt.strftime('%Y-%m-%d')
+                            trades_display = trades_display.round(4)
+                            st.dataframe(trades_display, use_container_width=True, height=300)
+                        
+                        st.markdown("---")
+                    
+                    else:
+                        st.subheader(f"💱 {name}")
+                        st.warning(f"⚠️ Brak transakcji dla tej pary przy lewarze {selected_lev_pairs}x")
+                        st.markdown("---")
+                
+                # Tabela porównawcza wszystkich par
+                st.subheader("📊 Porównanie wszystkich par")
+                
+                comparison_by_pair = []
+                for name in pair_names:
+                    if name in results_by_pair[selected_lev_pairs] and results_by_pair[selected_lev_pairs][name] is not None:
+                        m = results_by_pair[selected_lev_pairs][name]['metrics']
                         comparison_by_pair.append({
                             'Para': name,
                             'Transakcje': m['num_trades'],
                             'ROI (%)': round(m['roi'], 2),
+                            'Kapitał końcowy': f"{m['final_capital']:,.0f}",
+                            'Zysk/Strata': f"{m['profit_loss']:+,.0f}",
                             'Win Rate (%)': round(m['win_rate'], 1),
-                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
-                            'Najlepsza (%)': round(m['best_trade'], 2),
-                            'Najgorsza (%)': round(m['worst_trade'], 2)
+                            'Max DD (%)': round(m['max_drawdown'], 2),
+                            'Średni zwrot (%)': round(m['avg_return'], 2)
+                        })
+                    else:
+                        comparison_by_pair.append({
+                            'Para': name,
+                            'Transakcje': 0,
+                            'ROI (%)': 0,
+                            'Kapitał końcowy': "0",
+                            'Zysk/Strata': "0",
+                            'Win Rate (%)': 0,
+                            'Max DD (%)': 0,
+                            'Średni zwrot (%)': 0
                         })
                 
                 if comparison_by_pair:
@@ -432,7 +446,7 @@ if len(uploaded_files) > 0:
                     
                     def highlight_best_pair(row):
                         if row['ROI (%)'] == pairs_df['ROI (%)'].max() and row['ROI (%)'] > 0:
-                            return ['background-color: #90EE90'] * len(row)
+                            return ['background-color: #90EE90; font-weight: bold'] * len(row)
                         elif row['ROI (%)'] < 0:
                             return ['background-color: #FFB6C1'] * len(row)
                         return [''] * len(row)
@@ -442,133 +456,199 @@ if len(uploaded_files) > 0:
                         use_container_width=True
                     )
                     
-                    # Wykres porównania ROI par
+                    st.caption("🟩 Zielony = Najlepsza para | 🟥 Czerwony = ROI ujemny")
+                    
+                    # Wykresy porównawcze
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        fig_pairs_roi, ax_pairs_roi = plt.subplots(figsize=(10, 6))
+                        fig_roi, ax_roi = plt.subplots(figsize=(8, 5))
                         colors = ['green' if r > 0 else 'red' for r in pairs_df['ROI (%)']]
-                        bars = ax_pairs_roi.barh(pairs_df['Para'], pairs_df['ROI (%)'], 
-                                                 color=colors, alpha=0.7, edgecolor='black')
-                        ax_pairs_roi.axvline(x=0, color='black', linestyle='-', linewidth=1)
-                        ax_pairs_roi.set_title(f'ROI par przy lewarze {selected_lev_comparison}x', 
-                                              fontsize=12, fontweight='bold')
-                        ax_pairs_roi.set_xlabel('ROI (%)')
-                        ax_pairs_roi.grid(True, alpha=0.3, axis='x')
+                        bars = ax_roi.barh(pairs_df['Para'], pairs_df['ROI (%)'], 
+                                          color=colors, alpha=0.7, edgecolor='black')
+                        ax_roi.axvline(x=0, color='black', linestyle='-', linewidth=1)
+                        ax_roi.set_title(f'ROI poszczególnych par (Lewar {selected_lev_pairs}x)', 
+                                        fontsize=11, fontweight='bold')
+                        ax_roi.set_xlabel('ROI (%)')
+                        ax_roi.grid(True, alpha=0.3, axis='x')
                         
                         for bar in bars:
                             width = bar.get_width()
-                            ax_pairs_roi.text(width, bar.get_y() + bar.get_height()/2.,
-                                            f'{width:.1f}%', ha='left' if width > 0 else 'right',
-                                            va='center', fontweight='bold')
-                        st.pyplot(fig_pairs_roi)
+                            if width != 0:
+                                ax_roi.text(width, bar.get_y() + bar.get_height()/2.,
+                                          f'{width:.1f}%', ha='left' if width > 0 else 'right',
+                                          va='center', fontweight='bold', fontsize=9)
+                        st.pyplot(fig_roi)
+                        plt.close()
                     
                     with col2:
-                        fig_pairs_trades, ax_pairs_trades = plt.subplots(figsize=(10, 6))
-                        ax_pairs_trades.barh(pairs_df['Para'], pairs_df['Transakcje'], 
-                                            color='steelblue', alpha=0.7, edgecolor='black')
-                        ax_pairs_trades.set_title(f'Liczba transakcji przy lewarze {selected_lev_comparison}x', 
-                                                 fontsize=12, fontweight='bold')
-                        ax_pairs_trades.set_xlabel('Liczba transakcji')
-                        ax_pairs_trades.grid(True, alpha=0.3, axis='x')
-                        st.pyplot(fig_pairs_trades)
+                        fig_winrate, ax_winrate = plt.subplots(figsize=(8, 5))
+                        ax_winrate.barh(pairs_df['Para'], pairs_df['Win Rate (%)'], 
+                                       color='steelblue', alpha=0.7, edgecolor='black')
+                        ax_winrate.set_title(f'Win Rate poszczególnych par (Lewar {selected_lev_pairs}x)', 
+                                           fontsize=11, fontweight='bold')
+                        ax_winrate.set_xlabel('Win Rate (%)')
+                        ax_winrate.set_xlim(0, 100)
+                        ax_winrate.grid(True, alpha=0.3, axis='x')
+                        
+                        for i, (para, wr) in enumerate(zip(pairs_df['Para'], pairs_df['Win Rate (%)'])):
+                            if wr > 0:
+                                ax_winrate.text(wr, i, f'{wr:.1f}%', 
+                                              ha='left', va='center', fontweight='bold', fontsize=9)
+                        st.pyplot(fig_winrate)
+                        plt.close()
             
-            # Szczegóły wybranej pary
-            st.header("🔍 Szczegółowa analiza")
+            # ============================================
+            # SEKCJA 2: WYNIK KOSZYKA (PORTFELA)
+            # ============================================
+            st.markdown("---")
+            st.header("🎯 WYNIK KOSZYKA (PORTFOLIO)")
+            st.markdown("### Połączone wyniki wszystkich par razem")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_pair = st.selectbox("Wybierz parę:", pair_names)
-            with col2:
-                selected_lev = st.selectbox("Wybierz lewar:", leverages,
-                                           index=leverages.index(5) if 5 in leverages else 0)
-            
-            if (selected_pair in results_by_pair[selected_lev] and 
-                results_by_pair[selected_lev][selected_pair] is not None):
-                
-                trades = results_by_pair[selected_lev][selected_pair]['trades']
-                metrics = results_by_pair[selected_lev][selected_pair]['metrics']
-                
-                # Metryki
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Transakcje", metrics['num_trades'])
-                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                with col2:
-                    st.metric("ROI", f"{metrics['roi']:.2f}%", 
-                             delta=f"{metrics['profit_loss']:+,.2f} PLN")
-                    st.metric("Kapitał końcowy", f"{metrics['final_capital']:,.2f} PLN")
-                with col3:
-                    st.metric("Najlepsza", f"{metrics['best_trade']:.2f}%")
-                    st.metric("Najgorsza", f"{metrics['worst_trade']:.2f}%")
-                with col4:
-                    st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-                    st.metric("Średni zwrot", f"{metrics['avg_return']:.2f}%")
-                
-                # Tabela transakcji
-                st.subheader("📋 Historia transakcji")
-                trades_display = trades[['Entry_Date', 'Exit_Date', 'Signal', 
-                                        'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
-                trades_display['Entry_Date'] = trades_display['Entry_Date'].dt.strftime('%Y-%m-%d')
-                trades_display['Exit_Date'] = trades_display['Exit_Date'].dt.strftime('%Y-%m-%d')
-                trades_display = trades_display.round(4)
-                st.dataframe(trades_display, use_container_width=True, height=300)
-                
-                # Download
-                csv = trades.to_csv(index=False)
-                st.download_button(
-                    label=f"💾 Pobierz transakcje {selected_pair} (CSV)",
-                    data=csv,
-                    file_name=f"backtest_{selected_pair}_lev{selected_lev}x.csv",
-                    mime="text/csv"
-                )
+            if not portfolio_results or all(v is None for v in portfolio_results.values()):
+                st.warning("⚠️ Brak transakcji w portfelu")
             else:
-                st.warning(f"⚠️ Brak transakcji dla {selected_pair} z lewarem {selected_lev}x")
-
-else:
-    # Instrukcja użycia
-    st.info(f"""
-    ### 👋 Witaj w Multi-Currency Pivot Points Backtest Tool!
-    
-    **Jak używać:**
-    1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi
-    2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, GBPPLN)
-    3. ⚙️ Ustaw parametry strategii
-    4. 💰 Wybierz metodę alokacji kapitału
-    5. 🚀 Kliknij "Uruchom backtest"
-    6. 📊 Analizuj wyniki portfela i poszczególnych par!
-    
-    **Metody alokacji:**
-    - **Równomiernie**: Kapitał 10,000 PLN / 3 pary = 3,333 PLN na parę
-    - **Pełny kapitał**: 10,000 PLN na każdą parę (wyższe ryzyko/zwrot)
-    
-    **Format pliku CSV:**
-    - Kolumny: `Date`, `Price`, `Open`, `High`, `Low`
-    - Format daty: MM/DD/YYYY
-    - Separator: przecinek
-    """)
-    
-    # Przykładowy format
-    st.subheader("📋 Przykładowy format pliku CSV:")
-    example_data = pd.DataFrame({
-        'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
-        'Price': [4.2537, 4.2456, 4.2418],
-        'Open': [4.2455, 4.2418, 4.2310],
-        'High': [4.2615, 4.2493, 4.2481],
-        'Low': [4.2394, 4.2378, 4.2284]
-    })
-    st.dataframe(example_data, use_container_width=True)
-
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 O strategii")
-st.sidebar.info(f"""
-**Multi-Currency Portfolio** łączy sygnały z różnych par walutowych 
-w jeden zdywersyfikowany portfel, co może zmniejszyć ryzyko i zwiększyć 
-stabilność zwrotów.
-
-**Duration:** {holding_days} dni
-""")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("Made with ❤️ using Streamlit")
+                # Wybór lewaru dla portfela
+                selected_lev_portfolio = st.selectbox(
+                    "🎚️ Wybierz lewar do analizy portfela:",
+                    leverages,
+                    index=leverages.index(5) if 5 in leverages else 0,
+                    key="lev_portfolio"
+                )
+                
+                if portfolio_results[selected_lev_portfolio] is not None:
+                    portfolio_trades = portfolio_results[selected_lev_portfolio]['trades']
+                    portfolio_metrics = portfolio_results[selected_lev_portfolio]['metrics']
+                    
+                    # Duże metryki portfela
+                    st.subheader(f"📊 Wyniki portfela przy lewarze {selected_lev_portfolio}x")
+                    
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
+                    
+                    with col1:
+                        st.metric("Wszystkich transakcji", portfolio_metrics['num_trades'])
+                    with col2:
+                        st.metric("**ROI PORTFELA**", 
+                                 f"{portfolio_metrics['roi']:.2f}%",
+                                 delta=f"{portfolio_metrics['profit_loss']:+,.0f} PLN")
+                    with col3:
+                        st.metric("Win Rate", f"{portfolio_metrics['win_rate']:.1f}%")
+                    with col4:
+                        st.metric("Kapitał końcowy", f"{portfolio_metrics['final_capital']:,.0f} PLN")
+                    with col5:
+                        st.metric("Max Drawdown", f"{portfolio_metrics['max_drawdown']:.2f}%")
+                    with col6:
+                        st.metric("Średni zwrot", f"{portfolio_metrics['avg_return']:.2f}%")
+                    
+                    # Duży wykres kapitału portfela
+                    st.subheader("📈 Kapitał portfela w czasie")
+                    fig_port_main, ax_port_main = plt.subplots(figsize=(14, 6))
+                    
+                    color = 'green' if portfolio_metrics['roi'] > 0 else 'red'
+                    ax_port_main.plot(portfolio_trades['Entry_Date'], portfolio_trades['Capital'], 
+                                     color=color, linewidth=3, marker='o', markersize=4, 
+                                     label=f"Portfolio (ROI: {portfolio_metrics['roi']:.2f}%)")
+                    
+                    ax_port_main.axhline(y=initial_capital, color='black', linestyle='--', 
+                                        linewidth=2, alpha=0.7, label='Kapitał początkowy')
+                    ax_port_main.set_title(f'Wartość Portfela Multi-Currency (Lewar {selected_lev_portfolio}x)', 
+                                          fontsize=14, fontweight='bold')
+                    ax_port_main.set_xlabel('Data', fontsize=11)
+                    ax_port_main.set_ylabel('Kapitał (PLN)', fontsize=11)
+                    ax_port_main.legend(fontsize=10)
+                    ax_port_main.grid(True, alpha=0.3)
+                    ax_port_main.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                    plt.xticks(rotation=45)
+                    st.pyplot(fig_port_main)
+                    plt.close()
+                    
+                    # Informacja o alokacji
+                    st.info(f"""
+                    **Metoda alokacji:** {capital_per_pair}
+                    
+                    {'- Kapitał podzielony równomiernie na ' + str(len(all_data)) + ' par' if capital_per_pair == "Równomiernie na wszystkie pary" else '- Pełny kapitał zaangażowany w każdą parę'}
+                    """)
+                    
+                    # Rozkład transakcji po parach w portfelu
+                    st.subheader("📊 Udział par w portfelu")
+                    pair_contribution = portfolio_trades.groupby('Pair').agg({
+                        'PnL_Leveraged_%': ['count', 'sum', 'mean']
+                    }).round(2)
+                    pair_contribution.columns = ['Liczba transakcji', 'Suma ROI (%)', 'Średni ROI (%)']
+                    pair_contribution = pair_contribution.sort_values('Suma ROI (%)', ascending=False)
+                    st.dataframe(pair_contribution, use_container_width=True)
+                    
+                    # Historia transakcji portfela
+                    with st.expander("📋 Historia wszystkich transakcji portfela"):
+                        portfolio_display = portfolio_trades[['Entry_Date', 'Exit_Date', 'Pair', 'Signal', 
+                                                              'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
+                        portfolio_display['Entry_Date'] = portfolio_display['Entry_Date'].dt.strftime('%Y-%m-%d')
+                        portfolio_display['Exit_Date'] = portfolio_display['Exit_Date'].dt.strftime('%Y-%m-%d')
+                        portfolio_display = portfolio_display.round(4)
+                        st.dataframe(portfolio_display, use_container_width=True, height=400)
+                    
+                    # Download portfela
+                    csv_portfolio = portfolio_trades.to_csv(index=False)
+                    st.download_button(
+                        label=f"💾 Pobierz wszystkie transakcje portfela (CSV)",
+                        data=csv_portfolio,
+                        file_name=f"portfolio_lev{selected_lev_portfolio}x.csv",
+                        mime="text/csv"
+                    )
+                
+                else:
+                    st.warning(f"⚠️ Brak danych portfela dla lewaru {selected_lev_portfolio}x")
+                
+                # Tabela porównawcza różnych lewarów dla portfela
+                st.markdown("---")
+                st.subheader("⚖️ Porównanie lewarów dla całego portfela")
+                
+                portfolio_comparison = []
+                for lev in leverages:
+                    if portfolio_results[lev] is not None:
+                        m = portfolio_results[lev]['metrics']
+                        portfolio_comparison.append({
+                            'Lewar': f"{lev}x",
+                            'Transakcje': m['num_trades'],
+                            'ROI (%)': round(m['roi'], 2),
+                            'Kapitał końcowy': f"{m['final_capital']:,.0f}",
+                            'Zysk/Strata': f"{m['profit_loss']:+,.0f}",
+                            'Win Rate (%)': round(m['win_rate'], 1),
+                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
+                        })
+                
+                if portfolio_comparison:
+                    portfolio_df = pd.DataFrame(portfolio_comparison)
+                    
+                    def highlight_portfolio(row):
+                        if row['Lewar'] == '5x':
+                            return ['background-color: #FFD700; font-weight: bold'] * len(row)
+                        elif row['ROI (%)'] == portfolio_df['ROI (%)'].max() and row['ROI (%)'] > 0:
+                            return ['background-color: #90EE90'] * len(row)
+                        elif row['ROI (%)'] < 0:
+                            return ['background-color: #FFB6C1'] * len(row)
+                        return [''] * len(row)
+                    
+                    st.dataframe(
+                        portfolio_df.style.apply(highlight_portfolio, axis=1),
+                        use_container_width=True
+                    )
+                    
+                    st.caption("🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny")
+                    
+                    # Wykres porównania lewarów
+                    fig_lev_comp, ax_lev_comp = plt.subplots(figsize=(10, 5))
+                    colors = ['gold' if lev == '5x' else ('green' if roi > 0 else 'red') 
+                             for lev, roi in zip(portfolio_df['Lewar'], portfolio_df['ROI (%)'])]
+                    bars = ax_lev_comp.bar(portfolio_df['Lewar'], portfolio_df['ROI (%)'], 
+                                          color=colors, alpha=0.8, edgecolor='black', linewidth=2)
+                    ax_lev_comp.axhline(y=0, color='black', linestyle='-', linewidth=1)
+                    ax_lev_comp.set_title('ROI Portfela przy różnych lewarach', fontsize=13, fontweight='bold')
+                    ax_lev_comp.set_xlabel('Lewar')
+                    ax_lev_comp.set_ylabel('ROI (%)')
+                    ax_lev_comp.grid(True, alpha=0.3, axis='y')
+                    
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax_lev_comp.text(bar.get_x() + bar.get_width()/2., height,
+                                        f'{height:.1f}%', ha='center',
