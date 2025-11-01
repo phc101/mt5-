@@ -1,851 +1,434 @@
-#!/usr/bin/env python3
-"""
-MT5 Signal Generator with Dynamic Charts
-Fixed version with proper error handling + BTC/USD support
-"""
-
+import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import yfinance as yf
-import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import time
-import warnings
-warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
+import io
 
-# Page config
+# Konfiguracja strony
 st.set_page_config(
-    page_title="MT5 Trading Signals with Dynamic Charts",
-    page_icon="📈",
+    page_title="Pivot Points Backtest", 
+    page_icon="📊",
     layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    .price-verification {
-        background: #e8f4f8;
-        border: 2px solid #1f77b4;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 10px 0;
-    }
-    .signal-strong {
-        background: #d4edda;
-        border: 2px solid #28a745;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 10px 0;
-    }
-    .signal-weak {
-        background: #fff3cd;
-        border: 2px solid #ffc107;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 10px 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Tytuł aplikacji
+st.title("📊 Pivot Points Backtester")
+st.markdown("### Testuj strategię pivot points na różnych parach walutowych i lewarach")
 
-# Forex symbols mapping
-FOREX_SYMBOLS = {
-    # Major pairs
-    'EURUSD': 'EURUSD=X',
-    'GBPUSD': 'GBPUSD=X', 
-    'AUDUSD': 'AUDUSD=X',
-    'NZDUSD': 'NZDUSD=X',
-    'USDCAD': 'USDCAD=X',
-    'USDCHF': 'USDCHF=X',
-    'USDJPY': 'USDJPY=X',
-    'EURJPY': 'EURJPY=X',
-    'GBPJPY': 'GBPJPY=X',
-    'EURGBP': 'EURGBP=X',
-    
-    # Polish Zloty pairs
-    'CHFPLN': 'CHFPLN=X',  # Swiss Franc to Polish Zloty
-    'EURPLN': 'EURPLN=X',  # Euro to Polish Zloty
-    'USDPLN': 'USDPLN=X',  # US Dollar to Polish Zloty
-    'GBPPLN': 'GBPPLN=X',  # British Pound to Polish Zloty
-    
-    # Cryptocurrency
-    'BTCUSD': 'BTC-USD',   # Bitcoin to US Dollar
-    'ETHUSD': 'ETH-USD',   # Ethereum to US Dollar
-    'XRPUSD': 'XRP-USD',   # Ripple to US Dollar
-    'ADAUSD': 'ADA-USD',   # Cardano to US Dollar
-    'SOLUSD': 'SOL-USD'    # Solana to US Dollar
-}
+# Sidebar - parametry
+st.sidebar.header("⚙️ Parametry strategii")
 
-class ForexTradingBot:
-    def __init__(self):
-        self.lookback_days = 7
-        
-    def get_forex_data(self, symbol, days=30):
-        """Fetch forex data with robust error handling including PLN pairs and BTC"""
-        try:
-            yf_symbol = FOREX_SYMBOLS.get(symbol, f"{symbol}=X")
-            data = None
-            
-            # Special handling for crypto - try multiple symbol formats
-            if any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']):
-                # Extract base crypto symbol
-                crypto_base = None
-                for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']:
-                    if crypto in symbol:
-                        crypto_base = crypto
-                        break
-                
-                crypto_symbols = [
-                    f'{crypto_base}-USD',
-                    f'{crypto_base}USD',
-                    yf_symbol,
-                    symbol
-                ]
-                
-                for crypto_sym in crypto_symbols:
-                    try:
-                        ticker = yf.Ticker(crypto_sym)
-                        data = ticker.history(period=f"{days}d", interval="1d")
-                        if not data.empty:
-                            st.success(f"✅ Fetched {len(data)} days of data for {symbol} using {crypto_sym}")
-                            yf_symbol = crypto_sym
-                            break
-                    except:
-                        continue
-                
-                if data is None or data.empty:
-                    st.error(f"❌ Could not fetch crypto data for {symbol}")
-                    st.info("💡 Try: EURUSD or GBPUSD for testing")
-                    return None, None
-            else:
-                ticker = yf.Ticker(yf_symbol)
-                
-                # Try different methods to fetch data
-                
-                # Method 1: Using period
-                try:
-                    data = ticker.history(period=f"{days}d", interval="1d")
-                    if not data.empty:
-                        st.success(f"✅ Fetched {len(data)} days of data for {symbol}")
-                except Exception as e1:
-                    st.warning(f"Method 1 failed: {str(e1)[:100]}...")
-            
-            # Method 2: Using date range if Method 1 failed (only for non-crypto)
-            if (data is None or data.empty) and not any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL']):
-                try:
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=days + 5)
-                    data = ticker.history(start=start_date, end=end_date, interval="1d")
-                    if not data.empty:
-                        st.success(f"✅ Fetched {len(data)} days using date range")
-                except Exception as e2:
-                    st.warning(f"Method 2 failed: {str(e2)[:100]}...")
-            
-            # Method 3: Try alternative PLN symbols if dealing with Polish Zloty
-            if (data is None or data.empty) and 'PLN' in symbol:
-                try:
-                    # Alternative PLN symbols
-                    alt_symbols = {
-                        'USDPLN': ['PLN=X', 'USDPLN=X', 'USD/PLN'],
-                        'EURPLN': ['EURPLN=X', 'EUR/PLN'], 
-                        'GBPPLN': ['GBPPLN=X', 'GBP/PLN'],
-                        'CHFPLN': ['CHFPLN=X', 'CHF/PLN']
-                    }
-                    
-                    for alt_symbol in alt_symbols.get(symbol, []):
-                        try:
-                            alt_ticker = yf.Ticker(alt_symbol)
-                            data = alt_ticker.history(period=f"{days}d", interval="1d")
-                            if not data.empty:
-                                st.success(f"✅ Fetched {len(data)} days using alternative symbol {alt_symbol}")
-                                yf_symbol = alt_symbol
-                                break
-                        except:
-                            continue
-                            
-                except Exception as e3:
-                    st.warning(f"Method 3 (PLN alternatives) failed: {str(e3)[:100]}...")
-            
-            # Method 4: Try inverted pair for PLN (1/rate)
-            if (data is None or data.empty) and 'PLN' in symbol:
-                try:
-                    # Try inverted symbols (PLN as base currency doesn't work well on Yahoo)
-                    base_currency = symbol.replace('PLN', '')
-                    inverted_symbol = f"{base_currency}PLN=X"
-                    
-                    inv_ticker = yf.Ticker(inverted_symbol)
-                    inv_data = inv_ticker.history(period=f"{days}d", interval="1d")
-                    
-                    if not inv_data.empty:
-                        # Invert the data (1/rate) to get correct PLN rates
-                        data = inv_data.copy()
-                        for col in ['Open', 'High', 'Low', 'Close']:
-                            # For inverted rates: PLN rate = 1 / (base currency rate)
-                            # But actually we want: base/PLN rate, so we keep as is
-                            pass  # Keep original data
-                        st.success(f"✅ Fetched {len(data)} days using base pair approach")
-                        yf_symbol = inverted_symbol
-                        
-                except Exception as e4:
-                    st.warning(f"Method 4 (inverted pairs) failed: {str(e4)[:100]}...")
-            
-            if data is None or data.empty:
-                st.error(f"❌ Could not fetch data for {symbol} after trying all methods")
-                if 'PLN' in symbol:
-                    st.info(f"""
-                    💡 **PLN Pair Tips:**
-                    - PLN pairs might have limited data on Yahoo Finance
-                    - Try major pairs like EURUSD, GBPUSD for testing
-                    - Polish market data is often delayed or limited
-                    - Consider using alternative data sources for PLN pairs
-                    """)
-                return None, None
-            
-            # Clean and process data
-            data = data.dropna()
-            
-            # Handle timezone issues
-            if hasattr(data.index, 'tz_localize'):
-                try:
-                    if data.index.tz is not None:
-                        data.index = data.index.tz_convert(None)
-                    else:
-                        data.index = data.index.tz_localize(None)
-                except:
-                    pass
-            
-            # Create clean DataFrame
-            df = pd.DataFrame({
-                'Date': pd.to_datetime(data.index),
-                'Open': data['Open'].astype(float),
-                'High': data['High'].astype(float), 
-                'Low': data['Low'].astype(float),
-                'Close': data['Close'].astype(float),
-                'Volume': data['Volume'].astype(float) if 'Volume' in data.columns else 0
-            }).reset_index(drop=True)
-            
-            # Remove any NaN values
-            df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
-            
-            if len(df) < 5:
-                st.error(f"❌ Insufficient data for {symbol} (only {len(df)} valid days)")
-                return None, None
-            
-            # Verification info
-            verification = {
-                'symbol': symbol,
-                'yahoo_symbol': yf_symbol,
-                'data_points': len(df),
-                'latest_price': float(df['Close'].iloc[-1]),
-                'latest_date': df['Date'].iloc[-1],
-                'fetch_time': datetime.now(),
-                'is_pln_pair': 'PLN' in symbol,
-                'is_crypto': any(crypto in symbol for crypto in ['BTC', 'ETH', 'XRP', 'ADA', 'SOL'])
-            }
-            
-            return df, verification
-            
-        except Exception as e:
-            st.error(f"❌ Error fetching {symbol}: {str(e)}")
-            if 'PLN' in symbol:
-                st.info("""
-                📝 **PLN Pair Troubleshooting:**
-                - Polish Zloty pairs have limited availability
-                - Data might be sparse or delayed  
-                - Try refreshing or selecting major currency pairs
-                """)
-            return None, None
-    
-    def calculate_pivot_points(self, df):
-        """Calculate pivot points"""
-        if len(df) < self.lookback_days:
-            return df
-            
-        pivot_data = []
-        
-        for i in range(self.lookback_days, len(df)):
-            window = df.iloc[i-self.lookback_days:i]
-            avg_high = window['High'].mean()
-            avg_low = window['Low'].mean()
-            avg_close = window['Close'].mean()
-            
-            pivot = (avg_high + avg_low + avg_close) / 3
-            r1 = 2 * pivot - avg_low
-            r2 = pivot + (avg_high - avg_low)
-            s1 = 2 * pivot - avg_high
-            s2 = pivot - (avg_high - avg_low)
-            
-            pivot_data.append({
-                'Date': df.loc[i, 'Date'],
-                'Pivot': pivot,
-                'R1': r1,
-                'R2': r2,
-                'S1': s1,
-                'S2': s2,
-            })
-        
-        if pivot_data:
-            pivot_df = pd.DataFrame(pivot_data)
-            df = df.merge(pivot_df, on='Date', how='left')
-        
-        return df
-
-# Initialize bot
-@st.cache_resource
-def get_bot():
-    return ForexTradingBot()
-
-bot = get_bot()
-
-# Header
-st.title("📈 MT5 Trading Signals - Dynamic Charts")
-st.markdown("**Live Forex & Crypto data with Pivot Points analysis**")
-
-# Sidebar configuration
-st.sidebar.header("⚙️ Configuration")
-
-# Group currency pairs by category
-major_pairs = ['EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY']
-cross_pairs = ['EURJPY', 'GBPJPY', 'EURGBP']
-pln_pairs = ['EURPLN', 'USDPLN', 'GBPPLN', 'CHFPLN']
-crypto_pairs = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'ADAUSD', 'SOLUSD']
-
-# Create expandable sections for different pair types
-st.sidebar.markdown("### Currency Pairs")
-
-pair_category = st.sidebar.radio(
-    "Select Category:",
-    ["🌍 Major Pairs", "🔄 Cross Pairs", "🇵🇱 PLN Pairs", "₿ Crypto"],
-    index=0
+# Upload pliku
+uploaded_file = st.sidebar.file_uploader(
+    "Wgraj plik CSV z danymi", 
+    type=['csv'],
+    help="Plik musi zawierać kolumny: Date, Price, Open, High, Low"
 )
 
-if pair_category == "🌍 Major Pairs":
-    selected_symbol = st.sidebar.selectbox("Select Major Pair:", major_pairs, index=0)
-elif pair_category == "🔄 Cross Pairs":
-    selected_symbol = st.sidebar.selectbox("Select Cross Pair:", cross_pairs, index=0)
-elif pair_category == "🇵🇱 PLN Pairs":
-    selected_symbol = st.sidebar.selectbox("Select PLN Pair:", pln_pairs, index=0)
-    st.sidebar.info("💡 PLN pairs may have limited data availability")
-else:  # Crypto
-    selected_symbol = st.sidebar.selectbox("Select Crypto Pair:", crypto_pairs, index=0)
-    st.sidebar.info("₿ Crypto trades 24/7 with real-time data")
-
-# Chart type selection
-chart_type = st.sidebar.radio(
-    "Chart Type:",
-    ["📊 Candlestick", "📈 Line Chart", "🔀 Both Charts"],
-    index=0
+# Parametry strategii
+lookback_days = st.sidebar.slider(
+    "Liczba dni do obliczenia pivot points",
+    min_value=5,
+    max_value=50,
+    value=20,
+    step=5
 )
 
-chart_days = st.sidebar.slider("Chart Days", 7, 30, 14)
-show_volume = st.sidebar.checkbox("Show Volume", False)
-show_pivots = st.sidebar.checkbox("Show Pivot Levels", True)
-auto_refresh = st.sidebar.checkbox("Auto Refresh (60s)", False)
+threshold = st.sidebar.slider(
+    "Próg ±% od Pivot Point",
+    min_value=0.1,
+    max_value=3.0,
+    value=0.5,
+    step=0.1
+)
 
-# Main chart section
-st.markdown(f"## 📊 Live {selected_symbol} Chart - Last {chart_days} Days")
+leverages = st.sidebar.multiselect(
+    "Wybierz lewary do przetestowania",
+    options=[1, 2, 3, 5, 10, 15, 20],
+    default=[1, 5, 10, 20]
+)
 
-def create_chart(df, symbol, days, show_vol, show_piv, chart_type="candlestick"):
-    """Create OHLC chart with pivot points"""
+initial_capital = st.sidebar.number_input(
+    "Kapitał początkowy",
+    min_value=1000,
+    max_value=1000000,
+    value=10000,
+    step=1000
+)
+
+# Funkcje
+@st.cache_data
+def load_and_prepare_data(uploaded_file):
+    """Wczytaj i przygotuj dane"""
     try:
-        if df is None or len(df) == 0:
-            st.error("No data available for chart")
-            return None
+        df = pd.read_csv(uploaded_file)
         
-        # Get recent data
-        chart_data = df.tail(days)
+        # Usuń BOM jeśli istnieje
+        df.columns = df.columns.str.replace('ï»¿', '').str.strip()
         
-        # Determine decimal places based on instrument
-        if any(crypto in symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
-            decimal_places = 2  # Most crypto use 2 decimals
-            price_format = '.2f'
-        elif 'XRP' in symbol:
-            decimal_places = 4  # XRP uses more decimals (lower price)
-            price_format = '.4f'
-        elif 'JPY' in symbol:
-            decimal_places = 3  # JPY pairs use 3 decimals
-            price_format = '.3f'
-        else:
-            decimal_places = 5  # Standard forex uses 5 decimals
-            price_format = '.5f'
+        # Parsuj datę
+        df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y', errors='coerce')
+        if df['Date'].isna().any():
+            df['Date'] = pd.to_datetime(df['Date'], infer_datetime_format=True)
         
-        if show_vol:
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
-                subplot_titles=[f'{symbol} Price', 'Volume'],
-                row_heights=[0.7, 0.3]
-            )
-        else:
-            fig = go.Figure()
+        df = df.sort_values('Date').reset_index(drop=True)
         
-        # Add price chart based on type
-        if chart_type == "candlestick":
-            # Add candlestick chart with improved styling
-            candlestick = go.Candlestick(
-                x=chart_data['Date'],
-                open=chart_data['Open'],
-                high=chart_data['High'],
-                low=chart_data['Low'],
-                close=chart_data['Close'],
-                name=f'{symbol} OHLC',
-                increasing_line_color='#26a69a',  # Green for up candles
-                decreasing_line_color='#ef5350',  # Red for down candles
-                increasing_fillcolor='#26a69a',
-                decreasing_fillcolor='#ef5350',
-                line_width=1,  # Thin candle borders
-                increasing_line_width=1,
-                decreasing_line_width=1
-            )
-            
-            if show_vol:
-                fig.add_trace(candlestick, row=1, col=1)
-            else:
-                fig.add_trace(candlestick)
-                
-        elif chart_type == "line":
-            # Add line chart for closing prices
-            line_chart = go.Scatter(
-                x=chart_data['Date'],
-                y=chart_data['Close'],
-                mode='lines',
-                name=f'{symbol} Close Price',
-                line=dict(color='#1f77b4', width=2),
-                hovertemplate='<b>%{fullData.name}</b><br>' +
-                            'Date: %{x}<br>' +
-                            f'Price: %{{y:{price_format}}}<br>' +
-                            '<extra></extra>'
-            )
-            
-            if show_vol:
-                fig.add_trace(line_chart, row=1, col=1)
-            else:
-                fig.add_trace(line_chart)
+        # Konwersja do float
+        for col in ['Price', 'Open', 'High', 'Low']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Add pivot levels with improved positioning
-        if show_piv:
-            latest_row = chart_data.iloc[-1]
-            if pd.notna(latest_row.get('Pivot')):
-                
-                # Calculate chart boundaries for label positioning
-                chart_start = chart_data['Date'].min()
-                chart_end = chart_data['Date'].max()
-                
-                # Extend the right margin for labels by adding time buffer
-                time_diff = chart_end - chart_start
-                label_position = chart_end + time_diff * 0.05  # 5% beyond last candle
-                
-                levels = {
-                    'R2': (latest_row.get('R2'), 'red'),
-                    'R1': (latest_row.get('R1'), 'red'), 
-                    'Pivot': (latest_row['Pivot'], 'black'),
-                    'S1': (latest_row.get('S1'), 'green'),
-                    'S2': (latest_row.get('S2'), 'green')
-                }
-                
-                for name, (value, color) in levels.items():
-                    if pd.notna(value):
-                        # Add the horizontal line
-                        hline_args = {
-                            'y': value,
-                            'line_dash': 'solid',
-                            'line_color': color,
-                            'line_width': 1,
-                        }
-                        if show_vol:
-                            fig.add_hline(row=1, col=1, **hline_args)
-                        else:
-                            fig.add_hline(**hline_args)
-                        
-                        # Add separate annotation positioned away from candles
-                        annotation_args = {
-                            'x': label_position,
-                            'y': value,
-                            'text': f'{name}: {value:{price_format}}',
-                            'showarrow': False,
-                            'font': dict(size=10, color=color),
-                            'bgcolor': 'rgba(255,255,255,0.9)',
-                            'bordercolor': color,
-                            'borderwidth': 1,
-                            'xanchor': 'left',
-                            'yanchor': 'middle'
-                        }
-                        
-                        if show_vol:
-                            fig.add_annotation(row=1, col=1, **annotation_args)
-                        else:
-                            fig.add_annotation(**annotation_args)
+        # Dodaj dzień tygodnia
+        df['DayOfWeek'] = df['Date'].dt.dayofweek
         
-        # Add volume with better colors
-        if show_vol and 'Volume' in chart_data.columns:
-            colors = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(chart_data['Close'], chart_data['Open'])]
-            fig.add_trace(
-                go.Bar(
-                    x=chart_data['Date'], 
-                    y=chart_data['Volume'], 
-                    name='Volume', 
-                    marker_color=colors,
-                    opacity=0.7
-                ),
-                row=2, col=1
-            )
-        
-        # Current price marker with better visibility
-        current_price = chart_data['Close'].iloc[-1]
-        current_date = chart_data['Date'].iloc[-1]
-        
-        price_marker = go.Scatter(
-            x=[current_date],
-            y=[current_price],
-            mode='markers+text',
-            marker=dict(
-                size=10,
-                color='orange',
-                line=dict(width=2, color='white'),
-                symbol='circle'
-            ),
-            text=[f'{current_price:{price_format}}'],
-            textposition='top center',
-            name='Current Price',
-            textfont=dict(size=10, color='orange')
-        )
-        
-        if show_vol:
-            fig.add_trace(price_marker, row=1, col=1)
-        else:
-            fig.add_trace(price_marker)
-        
-        # Update layout with extended right margin for labels
-        chart_title = f"{symbol} - {chart_type.title()} Chart - Current: {current_price:{price_format}}"
-        
-        fig.update_layout(
-            title=chart_title,
-            height=600 if show_vol else 450,
-            xaxis_rangeslider_visible=False,
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            margin=dict(r=120)  # Extended right margin for pivot labels
-        )
-        
-        # Update axes with grid
-        if show_vol:
-            fig.update_xaxes(
-                title_text="Date", 
-                showgrid=True, 
-                gridwidth=0.5, 
-                gridcolor='lightgray',
-                row=2, col=1
-            )
-            fig.update_yaxes(
-                title_text="Price", 
-                showgrid=True, 
-                gridwidth=0.5, 
-                gridcolor='lightgray',
-                row=1, col=1
-            )
-            fig.update_yaxes(
-                title_text="Volume", 
-                showgrid=True, 
-                gridwidth=0.5, 
-                gridcolor='lightgray',
-                row=2, col=1
-            )
-        else:
-            fig.update_xaxes(
-                title_text="Date", 
-                showgrid=True, 
-                gridwidth=0.5, 
-                gridcolor='lightgray'
-            )
-            fig.update_yaxes(
-                title_text="Price", 
-                showgrid=True, 
-                gridwidth=0.5, 
-                gridcolor='lightgray'
-            )
-        
-        # Better spacing for charts
-        if chart_type == "candlestick":
-            fig.update_xaxes(type='category')  # Better candle spacing
-        
-        return fig
-        
+        return df, None
     except Exception as e:
-        st.error(f"Error creating chart: {str(e)}")
-        return None
+        return None, str(e)
 
-def create_line_chart(df, symbol, days, show_piv):
-    """Create separate line chart for closing prices"""
-    try:
-        if df is None or len(df) == 0:
-            return None
+def calculate_pivot_points(high, low, close):
+    """Oblicz pivot points"""
+    pp = (high + low + close) / 3
+    r1 = 2 * pp - low
+    r2 = pp + (high - low)
+    r3 = high + 2 * (pp - low)
+    s1 = 2 * pp - high
+    s2 = pp - (high - low)
+    s3 = low - 2 * (high - pp)
+    return pp, r1, r2, r3, s1, s2, s3
+
+def run_backtest(df, threshold_pct, lookback, leverage, initial_capital):
+    """Uruchom backtest"""
+    mondays = df[df['DayOfWeek'] == 0].copy()
+    trades = []
+    
+    for idx, monday_row in mondays.iterrows():
+        monday_date = monday_row['Date']
+        monday_price = monday_row['Open']
         
-        chart_data = df.tail(days)
+        prev_days = df[df['Date'] < monday_date].tail(lookback)
         
-        # Determine decimal places based on instrument
-        if any(crypto in symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
-            price_format = '.2f'
-        elif 'XRP' in symbol:
-            price_format = '.4f'
-        elif 'JPY' in symbol:
-            price_format = '.3f'
+        if len(prev_days) >= lookback:
+            high_period = prev_days['High'].max()
+            low_period = prev_days['Low'].min()
+            close_period = prev_days['Price'].iloc[-1]
+            
+            pp, r1, r2, r3, s1, s2, s3 = calculate_pivot_points(high_period, low_period, close_period)
+            
+            buy_threshold = pp * (1 - threshold_pct/100)
+            sell_threshold = pp * (1 + threshold_pct/100)
+            
+            future_dates = df[df['Date'] > monday_date]
+            friday = future_dates[future_dates['DayOfWeek'] == 4].head(1)
+            
+            if not friday.empty:
+                friday_date = friday.iloc[0]['Date']
+                friday_price = friday.iloc[0]['Price']
+                
+                signal = None
+                pnl_pct = 0
+                
+                if monday_price <= buy_threshold:
+                    signal = 'BUY'
+                    pnl_pct = ((friday_price - monday_price) / monday_price) * 100
+                elif monday_price >= sell_threshold:
+                    signal = 'SELL'
+                    pnl_pct = ((monday_price - friday_price) / monday_price) * 100
+                
+                if signal:
+                    pnl_leveraged = pnl_pct * leverage
+                    trades.append({
+                        'Monday_Date': monday_date,
+                        'Friday_Date': friday_date,
+                        'Signal': signal,
+                        'Entry_Price': monday_price,
+                        'Exit_Price': friday_price,
+                        'PnL_%': pnl_pct,
+                        'PnL_Leveraged_%': pnl_leveraged,
+                        'Year': monday_date.year,
+                        'Month': monday_date.month,
+                    })
+    
+    if not trades:
+        return None
+    
+    trades_df = pd.DataFrame(trades)
+    
+    # Oblicz kapitał
+    trades_df['Capital'] = initial_capital
+    for i in range(len(trades_df)):
+        if i > 0:
+            trades_df.loc[i, 'Capital'] = trades_df.loc[i-1, 'Capital'] * (1 + trades_df.loc[i, 'PnL_Leveraged_%'] / 100)
         else:
-            price_format = '.5f'
-        
-        fig = go.Figure()
-        
-        # Add line chart for closing prices
-        line_chart = go.Scatter(
-            x=chart_data['Date'],
-            y=chart_data['Close'],
-            mode='lines+markers',
-            name=f'{symbol} Close Price',
-            line=dict(color='#1f77b4', width=2),
-            marker=dict(size=4, color='#1f77b4'),
-            hovertemplate='<b>%{fullData.name}</b><br>' +
-                        'Date: %{x}<br>' +
-                        f'Price: %{{y:{price_format}}}<br>' +
-                        '<extra></extra>'
-        )
-        
-        fig.add_trace(line_chart)
-        
-        # Add pivot levels
-        if show_piv:
-            latest_row = chart_data.iloc[-1]
-            if pd.notna(latest_row.get('Pivot')):
-                
-                chart_start = chart_data['Date'].min()
-                chart_end = chart_data['Date'].max()
-                time_diff = chart_end - chart_start
-                label_position = chart_end + time_diff * 0.05
-                
-                levels = {
-                    'R2': (latest_row.get('R2'), 'red'),
-                    'R1': (latest_row.get('R1'), 'red'), 
-                    'Pivot': (latest_row['Pivot'], 'black'),
-                    'S1': (latest_row.get('S1'), 'green'),
-                    'S2': (latest_row.get('S2'), 'green')
-                }
-                
-                for name, (value, color) in levels.items():
-                    if pd.notna(value):
-                        # Add horizontal line
-                        fig.add_hline(
-                            y=value,
-                            line_dash='solid',
-                            line_color=color,
-                            line_width=1
-                        )
-                        
-                        # Add annotation
-                        fig.add_annotation(
-                            x=label_position,
-                            y=value,
-                            text=f'{name}: {value:{price_format}}',
-                            showarrow=False,
-                            font=dict(size=10, color=color),
-                            bgcolor='rgba(255,255,255,0.9)',
-                            bordercolor=color,
-                            borderwidth=1,
-                            xanchor='left',
-                            yanchor='middle'
-                        )
-        
-        # Current price marker
-        current_price = chart_data['Close'].iloc[-1]
-        current_date = chart_data['Date'].iloc[-1]
-        
-        fig.add_scatter(
-            x=[current_date],
-            y=[current_price],
-            mode='markers+text',
-            marker=dict(size=12, color='orange', line=dict(width=2, color='white')),
-            text=[f'{current_price:{price_format}}'],
-            textposition='top center',
-            name='Current Price',
-            textfont=dict(size=10, color='orange')
-        )
-        
-        # Update layout
-        fig.update_layout(
-            title=f"{symbol} - Line Chart - Current: {current_price:{price_format}}",
-            height=400,
-            xaxis_rangeslider_visible=False,
-            showlegend=True,
-            margin=dict(r=120),
-            xaxis_title="Date",
-            yaxis_title="Price"
-        )
-        
-        # Update axes with grid
-        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgray')
-        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgray')
-        
-        return fig
-        
-    except Exception as e:
-        st.error(f"Error creating line chart: {str(e)}")
+            trades_df.loc[i, 'Capital'] = initial_capital * (1 + trades_df.loc[i, 'PnL_Leveraged_%'] / 100)
+    
+    return trades_df
+
+def calculate_metrics(trades_df, initial_capital):
+    """Oblicz metryki"""
+    if trades_df is None or len(trades_df) == 0:
         return None
+    
+    total_return = trades_df['PnL_Leveraged_%'].sum()
+    final_capital = trades_df['Capital'].iloc[-1]
+    roi = ((final_capital / initial_capital) - 1) * 100
+    
+    winning = len(trades_df[trades_df['PnL_Leveraged_%'] > 0])
+    losing = len(trades_df[trades_df['PnL_Leveraged_%'] < 0])
+    win_rate = (winning / len(trades_df)) * 100 if len(trades_df) > 0 else 0
+    
+    trades_df['Cumulative_Return'] = trades_df['PnL_Leveraged_%'].cumsum()
+    max_dd = (trades_df['Cumulative_Return'].cummax() - trades_df['Cumulative_Return']).max()
+    
+    return {
+        'num_trades': len(trades_df),
+        'total_return': total_return,
+        'roi': roi,
+        'final_capital': final_capital,
+        'profit_loss': final_capital - initial_capital,
+        'win_rate': win_rate,
+        'winning_trades': winning,
+        'losing_trades': losing,
+        'avg_return': trades_df['PnL_Leveraged_%'].mean(),
+        'best_trade': trades_df['PnL_Leveraged_%'].max(),
+        'worst_trade': trades_df['PnL_Leveraged_%'].min(),
+        'max_drawdown': max_dd
+    }
 
-# Fetch data and create chart
-with st.spinner(f"Loading {selected_symbol} data..."):
-    df, verification = bot.get_forex_data(selected_symbol, max(chart_days + 10, 30))
-
-if df is not None and verification:
-    # Calculate pivots
-    df_with_pivots = bot.calculate_pivot_points(df)
+# Główna logika
+if uploaded_file is not None:
+    # Wczytaj dane
+    df, error = load_and_prepare_data(uploaded_file)
     
-    # Create and display chart
-    fig = create_chart(df_with_pivots, selected_symbol, chart_days, show_volume, show_pivots)
-    
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Current analysis
-    st.markdown("### 🎯 Current Analysis")
-    
-    latest_row = df_with_pivots.iloc[-1]
-    current_price = latest_row['Close']
-    
-    # Determine price format
-    if any(crypto in selected_symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
-        price_format = '.2f'
-    elif 'XRP' in selected_symbol:
-        price_format = '.4f'
-    elif 'JPY' in selected_symbol:
-        price_format = '.3f'
+    if error:
+        st.error(f"❌ Błąd wczytywania pliku: {error}")
+        st.info("💡 Plik musi zawierać kolumny: Date, Price, Open, High, Low")
     else:
-        price_format = '.5f'
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Current Price", f"{current_price:{price_format}}")
-    
-    with col2:
-        if pd.notna(latest_row.get('Pivot')):
-            pivot_diff = current_price - latest_row['Pivot']
-            st.metric("vs Pivot", f"{pivot_diff:+{price_format}}")
-        else:
-            st.metric("vs Pivot", "N/A")
-    
-    with col3:
-        st.metric("Data Points", verification['data_points'])
-    
-    with col4:
-        st.metric("Latest Date", verification['latest_date'].strftime('%Y-%m-%d'))
-        if verification.get('is_pln_pair', False):
-            st.caption("🇵🇱 PLN Pair")
-        if verification.get('is_crypto', False):
-            st.caption("₿ Crypto")
-    
-    # Signal analysis
-    if pd.notna(latest_row.get('S2')) and pd.notna(latest_row.get('R2')):
+        st.success(f"✅ Wczytano {len(df)} rekordów z okresu {df['Date'].min().date()} do {df['Date'].max().date()}")
         
-        # Determine signal
-        signal_type = None
-        signal_strength = "NEUTRAL"
+        # Pokaż przykładowe dane
+        with st.expander("📋 Podgląd danych"):
+            st.dataframe(df.head(10))
         
-        if current_price < latest_row['S2']:
-            signal_type = "🟢 BUY SIGNAL"
-            signal_strength = "STRONG"
-            signal_reason = f"Price {current_price:{price_format}} below S2 level {latest_row['S2']:{price_format}}"
-            css_class = "signal-strong"
-        elif current_price > latest_row['R2']:
-            signal_type = "🔴 SELL SIGNAL"
-            signal_strength = "STRONG"
-            signal_reason = f"Price {current_price:{price_format}} above R2 level {latest_row['R2']:{price_format}}"
-            css_class = "signal-strong"
-        elif current_price < latest_row.get('S1', latest_row['Pivot']):
-            signal_type = "🟡 Weak Buy"
-            signal_strength = "WEAK"
-            signal_reason = f"Price {current_price:{price_format}} below S1"
-            css_class = "signal-weak"
-        elif current_price > latest_row.get('R1', latest_row['Pivot']):
-            signal_type = "🟡 Weak Sell"
-            signal_strength = "WEAK"
-            signal_reason = f"Price {current_price:{price_format}} above R1"
-            css_class = "signal-weak"
-        
-        if signal_type:
-            st.markdown(f'<div class="{css_class}"><h4>{signal_type}</h4><p>{signal_reason}</p></div>', 
-                       unsafe_allow_html=True)
-        else:
-            st.info(f"**No Signal** - Price {current_price:{price_format}} between pivot levels")
-        
-        # Pivot levels table
-        st.markdown("#### 📊 Current Pivot Levels")
-        
-        levels_data = []
-        for level_name in ['R2', 'R1', 'Pivot', 'S1', 'S2']:
-            value = latest_row.get(level_name)
-            if pd.notna(value):
-                distance = ((value - current_price) / current_price * 100)
-                levels_data.append({
-                    'Level': level_name,
-                    'Value': f"{value:{price_format}}",
-                    'Distance': f"{distance:+.2f}%"
-                })
-        
-        if levels_data:
-            levels_df = pd.DataFrame(levels_data)
-            st.dataframe(levels_df, use_container_width=True, hide_index=True)
-
-    # Verification details
-    with st.expander("🔍 Data Verification"):
-        st.markdown(f"""
-        **Symbol:** {verification['symbol']} ({verification['yahoo_symbol']})  
-        **Data Points:** {verification['data_points']}  
-        **Latest Price:** {verification['latest_price']:{price_format}}  
-        **Fetch Time:** {verification['fetch_time'].strftime('%H:%M:%S')}  
-        **Verify at:** https://finance.yahoo.com/quote/{verification['yahoo_symbol']}
-        """)
-        
-        # Show recent data
-        recent_data = df_with_pivots.tail(5)[['Date', 'Open', 'High', 'Low', 'Close']].copy()
-        recent_data['Date'] = recent_data['Date'].dt.strftime('%Y-%m-%d')
-        
-        # Round to appropriate decimals
-        if any(crypto in selected_symbol for crypto in ['BTC', 'ETH', 'ADA', 'SOL']):
-            decimals = 2
-        elif 'XRP' in selected_symbol:
-            decimals = 4
-        elif 'JPY' in selected_symbol:
-            decimals = 3
-        else:
-            decimals = 5
+        # Uruchom backtesty dla wybranych lewarów
+        if st.sidebar.button("🚀 Uruchom backtest", type="primary"):
+            results = {}
             
-        for col in ['Open', 'High', 'Low', 'Close']:
-            recent_data[col] = recent_data[col].round(decimals)
-        st.dataframe(recent_data, use_container_width=True, hide_index=True)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, lev in enumerate(leverages):
+                status_text.text(f"Testowanie lewaru {lev}x...")
+                trades = run_backtest(df, threshold, lookback_days, lev, initial_capital)
+                if trades is not None:
+                    metrics = calculate_metrics(trades, initial_capital)
+                    results[lev] = {'trades': trades, 'metrics': metrics}
+                else:
+                    results[lev] = None
+                progress_bar.progress((i + 1) / len(leverages))
+            
+            status_text.empty()
+            progress_bar.empty()
+            
+            if not results or all(v is None for v in results.values()):
+                st.warning("⚠️ Brak transakcji spełniających kryteria strategii. Spróbuj zmienić parametry.")
+            else:
+                # Tabela porównawcza
+                st.header("📊 Wyniki Backtestów")
+                
+                comparison_data = []
+                for lev in leverages:
+                    if results[lev] is not None:
+                        m = results[lev]['metrics']
+                        comparison_data.append({
+                            'Lewar': f"{lev}x",
+                            'Transakcje': m['num_trades'],
+                            'ROI (%)': round(m['roi'], 2),
+                            'Kapitał końcowy': f"{m['final_capital']:,.2f}",
+                            'Zysk/Strata': f"{m['profit_loss']:+,.2f}",
+                            'Win Rate (%)': round(m['win_rate'], 1),
+                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
+                            'Najlepsza (%)': round(m['best_trade'], 2),
+                            'Najgorsza (%)': round(m['worst_trade'], 2)
+                        })
+                    else:
+                        comparison_data.append({
+                            'Lewar': f"{lev}x",
+                            'Transakcje': 0,
+                            'ROI (%)': 0,
+                            'Kapitał końcowy': f"{initial_capital:,.2f}",
+                            'Zysk/Strata': "0.00",
+                            'Win Rate (%)': 0,
+                            'Max Drawdown (%)': 0,
+                            'Najlepsza (%)': 0,
+                            'Najgorsza (%)': 0
+                        })
+                
+                comparison_df = pd.DataFrame(comparison_data)
+                
+                # Podświetl najlepszy ROI
+                def highlight_best_roi(row):
+                    if row['ROI (%)'] == comparison_df['ROI (%)'].max() and row['ROI (%)'] > 0:
+                        return ['background-color: #90EE90'] * len(row)
+                    elif row['ROI (%)'] < 0:
+                        return ['background-color: #FFB6C1'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(
+                    comparison_df.style.apply(highlight_best_roi, axis=1),
+                    use_container_width=True
+                )
+                
+                # Wykresy
+                st.header("📈 Wizualizacje")
+                
+                # Wykres 1: Kapitał w czasie
+                fig1, ax1 = plt.subplots(figsize=(12, 6))
+                for lev in leverages:
+                    if results[lev] is not None:
+                        trades = results[lev]['trades']
+                        ax1.plot(trades['Monday_Date'], trades['Capital'], 
+                                label=f'Lewar {lev}x', linewidth=2, marker='o', markersize=3)
+                
+                ax1.axhline(y=initial_capital, color='black', linestyle='--', 
+                           linewidth=1, alpha=0.5, label='Kapitał początkowy')
+                ax1.set_title('Wartość Portfela w Czasie', fontsize=14, fontweight='bold')
+                ax1.set_xlabel('Data')
+                ax1.set_ylabel('Kapitał (PLN)')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                plt.xticks(rotation=45)
+                st.pyplot(fig1)
+                
+                # Wykres 2: ROI porównanie
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    fig2, ax2 = plt.subplots(figsize=(8, 6))
+                    valid_results = [(lev, results[lev]['metrics']['roi']) 
+                                    for lev in leverages if results[lev] is not None]
+                    if valid_results:
+                        levs, rois = zip(*valid_results)
+                        colors = ['green' if r > 0 else 'red' for r in rois]
+                        bars = ax2.bar([f"{l}x" for l in levs], rois, color=colors, alpha=0.7, edgecolor='black')
+                        ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
+                        ax2.set_title('ROI - Porównanie', fontsize=12, fontweight='bold')
+                        ax2.set_ylabel('ROI (%)')
+                        ax2.grid(True, alpha=0.3, axis='y')
+                        
+                        for bar in bars:
+                            height = bar.get_height()
+                            ax2.text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height:.1f}%', ha='center', 
+                                    va='bottom' if height > 0 else 'top', fontweight='bold')
+                    st.pyplot(fig2)
+                
+                with col2:
+                    fig3, ax3 = plt.subplots(figsize=(8, 6))
+                    valid_results = [(lev, results[lev]['metrics']['max_drawdown']) 
+                                    for lev in leverages if results[lev] is not None]
+                    if valid_results:
+                        levs, dds = zip(*valid_results)
+                        ax3.bar([f"{l}x" for l in levs], dds, color='orange', alpha=0.7, edgecolor='black')
+                        ax3.set_title('Max Drawdown - Porównanie', fontsize=12, fontweight='bold')
+                        ax3.set_ylabel('Max Drawdown (%)')
+                        ax3.grid(True, alpha=0.3, axis='y')
+                    st.pyplot(fig3)
+                
+                # Szczegóły dla wybranego lewaru
+                st.header("🔍 Szczegóły")
+                selected_lev = st.selectbox("Wybierz lewar do szczegółowej analizy:", leverages)
+                
+                if results[selected_lev] is not None:
+                    trades = results[selected_lev]['trades']
+                    metrics = results[selected_lev]['metrics']
+                    
+                    # Metryki w kolumnach
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Liczba transakcji", metrics['num_trades'])
+                        st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+                    with col2:
+                        st.metric("ROI", f"{metrics['roi']:.2f}%", 
+                                 delta=f"{metrics['profit_loss']:+,.2f} PLN")
+                        st.metric("Kapitał końcowy", f"{metrics['final_capital']:,.2f} PLN")
+                    with col3:
+                        st.metric("Najlepsza transakcja", f"{metrics['best_trade']:.2f}%")
+                        st.metric("Najgorsza transakcja", f"{metrics['worst_trade']:.2f}%")
+                    with col4:
+                        st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
+                        st.metric("Średni zwrot", f"{metrics['avg_return']:.2f}%")
+                    
+                    # Zwroty roczne
+                    st.subheader("📅 Zwroty roczne")
+                    yearly = trades.groupby('Year')['PnL_Leveraged_%'].agg(['sum', 'count']).round(2)
+                    yearly.columns = ['Suma (%)', 'Liczba transakcji']
+                    st.dataframe(yearly, use_container_width=True)
+                    
+                    # Tabela transakcji
+                    st.subheader("📋 Wszystkie transakcje")
+                    trades_display = trades[['Monday_Date', 'Friday_Date', 'Signal', 
+                                            'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
+                    trades_display['Monday_Date'] = trades_display['Monday_Date'].dt.strftime('%Y-%m-%d')
+                    trades_display['Friday_Date'] = trades_display['Friday_Date'].dt.strftime('%Y-%m-%d')
+                    trades_display = trades_display.round(4)
+                    st.dataframe(trades_display, use_container_width=True)
+                    
+                    # Download CSV
+                    csv = trades.to_csv(index=False)
+                    st.download_button(
+                        label="💾 Pobierz szczegóły transakcji (CSV)",
+                        data=csv,
+                        file_name=f"backtest_leverage_{selected_lev}x.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning(f"⚠️ Brak transakcji dla lewaru {selected_lev}x")
 
 else:
-    st.error("Could not load data. Please try a different currency pair or refresh.")
-
-# Manual refresh
-if st.button("🔄 Refresh Data", type="primary"):
-    st.cache_resource.clear()
-    st.rerun()
-
-# Auto refresh
-if auto_refresh:
-    time.sleep(3)
-    st.rerun()
+    # Instrukcja użycia
+    st.info("""
+    ### 👋 Witaj w Pivot Points Backtest Tool!
+    
+    **Jak używać:**
+    1. 📁 Wgraj plik CSV z danymi historycznymi w lewym panelu
+    2. ⚙️ Ustaw parametry strategii (lookback, próg, lewary)
+    3. 🚀 Kliknij "Uruchom backtest"
+    4. 📊 Analizuj wyniki i porównaj różne lewary!
+    
+    **Format pliku CSV:**
+    - Kolumny: `Date`, `Price`, `Open`, `High`, `Low`
+    - Format daty: MM/DD/YYYY
+    - Separator: przecinek
+    
+    **Strategia:**
+    - Oblicza pivot points z ostatnich N dni przed każdym poniedziałkiem
+    - Kupuje gdy cena ≤ X% poniżej Pivot Point
+    - Sprzedaje gdy cena ≥ X% powyżej Pivot Point
+    - Zamyka pozycje w najbliższy piątek
+    """)
+    
+    # Przykładowy format danych
+    st.subheader("📋 Przykładowy format pliku CSV:")
+    example_data = pd.DataFrame({
+        'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
+        'Price': [4.2537, 4.2456, 4.2418],
+        'Open': [4.2455, 4.2418, 4.2310],
+        'High': [4.2615, 4.2493, 4.2481],
+        'Low': [4.2394, 4.2378, 4.2284]
+    })
+    st.dataframe(example_data, use_container_width=True)
 
 # Footer
-st.markdown("---")
-st.markdown(f"""
-**🕐 Current Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-**⚠️ For Demo Trading Only** - Always test on demo accounts first  
-**📊 Data Source:** Yahoo Finance with ~15min delay  
-**₿ Crypto:** Bitcoin trades 24/7 with real-time data
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📚 O strategii")
+st.sidebar.info("""
+**Pivot Points** to poziomy wsparcia i oporu obliczone na podstawie 
+historycznych cen (High, Low, Close). Strategia wykorzystuje odchylenia 
+od tych poziomów do generowania sygnałów kupna i sprzedaży.
 """)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("Made with ❤️ using Streamlit")
