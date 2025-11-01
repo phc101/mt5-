@@ -15,7 +15,7 @@ st.set_page_config(
 
 # Tytuł aplikacji
 st.title("📊 Pivot Points Backtester - Multi-Currency Portfolio")
-st.markdown("### Testuj strategię pivot points na koszyku par walutowych")
+st.markdown("### Testuj strategię pivot points na koszyku par walutowych i kryptowalut")
 
 # Sidebar - parametry
 st.sidebar.header("⚙️ Parametry strategii")
@@ -29,10 +29,10 @@ for i in range(5):
     col1, col2 = st.sidebar.columns([3, 1])
     with col1:
         file = st.sidebar.file_uploader(
-            f"Para walutowa #{i+1}", 
+            f"Para #{i+1}", 
             type=['csv'],
             key=f"file_{i}",
-            help="Plik CSV z kolumnami: Date, Price, Open, High, Low"
+            help="Plik CSV z danymi historycznymi"
         )
     with col2:
         name = st.sidebar.text_input(
@@ -97,12 +97,16 @@ capital_per_pair = st.sidebar.radio(
 # Funkcje
 @st.cache_data
 def load_and_prepare_data(uploaded_file):
-    """Wczytaj i przygotuj dane"""
+    """Wczytaj i przygotuj dane - obsługuje format forex i BTC"""
     try:
         df = pd.read_csv(uploaded_file)
         
         # Usuń BOM jeśli istnieje
         df.columns = df.columns.str.replace('ï»¿', '').str.strip()
+        
+        # Wykryj format pliku
+        has_vol = 'Vol.' in df.columns
+        has_change = 'Change %' in df.columns
         
         # Parsuj datę
         df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y', errors='coerce')
@@ -111,17 +115,24 @@ def load_and_prepare_data(uploaded_file):
         
         df = df.sort_values('Date').reset_index(drop=True)
         
-        # Konwersja do float
+        # Konwersja do float - usuń przecinki z liczb (format BTC)
         for col in ['Price', 'Open', 'High', 'Low']:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if df[col].dtype == 'object':
+                    # Usuń przecinki i konwertuj
+                    df[col] = df[col].str.replace(',', '').astype(float)
+                else:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Dodaj dzień tygodnia
         df['DayOfWeek'] = df['Date'].dt.dayofweek
         
-        return df, None
+        # Info o formacie
+        file_type = "BTC/Crypto format" if has_vol else "Forex format"
+        
+        return df, None, file_type
     except Exception as e:
-        return None, str(e)
+        return None, str(e), None
 
 def calculate_pivot_points(high, low, close):
     """Oblicz pivot points"""
@@ -261,17 +272,20 @@ def calculate_metrics(trades_df, initial_capital):
 
 # Główna logika
 if len(uploaded_files) > 0:
-    st.success(f"✅ Wczytano {len(uploaded_files)} par walutowych: {', '.join(pair_names)}")
+    st.success(f"✅ Wczytano {len(uploaded_files)} par: {', '.join(pair_names)}")
     
     # Wczytaj wszystkie dane
     all_data = {}
+    file_types = {}
+    
     for file, name in zip(uploaded_files, pair_names):
-        df, error = load_and_prepare_data(file)
+        df, error, file_type = load_and_prepare_data(file)
         if error:
             st.error(f"❌ Błąd w pliku {name}: {error}")
         else:
             all_data[name] = df
-            st.info(f"📊 {name}: {len(df)} rekordów ({df['Date'].min().date()} - {df['Date'].max().date()})")
+            file_types[name] = file_type
+            st.info(f"📊 {name}: {len(df)} rekordów ({df['Date'].min().date()} - {df['Date'].max().date()}) | {file_type}")
     
     if len(all_data) == 0:
         st.error("❌ Nie udało się wczytać żadnych danych")
@@ -279,7 +293,7 @@ if len(uploaded_files) > 0:
         # Pokaż przykładowe dane
         with st.expander("📋 Podgląd danych wszystkich par"):
             for name, df in all_data.items():
-                st.subheader(name)
+                st.subheader(f"{name} ({file_types[name]})")
                 st.dataframe(df.head(5))
         
         # Uruchom backtesty
@@ -400,7 +414,58 @@ if len(uploaded_files) > 0:
                 ax_portfolio.grid(True, alpha=0.3)
                 ax_portfolio.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
                 plt.xticks(rotation=45)
+                plt.tight_layout()
                 st.pyplot(fig_portfolio)
+                
+                # Wykresy ROI i Drawdown
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    fig_roi, ax_roi = plt.subplots(figsize=(8, 6))
+                    valid_results = [(lev, portfolio_results[lev]['metrics']['roi']) 
+                                    for lev in leverages if portfolio_results[lev] is not None]
+                    if valid_results:
+                        levs, rois = zip(*valid_results)
+                        colors = ['gold' if l == 5 else ('green' if r > 0 else 'red') 
+                                 for l, r in zip(levs, rois)]
+                        bars = ax_roi.bar([f"{l}x" for l in levs], rois, color=colors, 
+                                      alpha=0.8, edgecolor='black', linewidth=2)
+                        ax_roi.axhline(y=0, color='black', linestyle='-', linewidth=1)
+                        ax_roi.set_title('ROI Portfela - Porównanie', fontsize=12, fontweight='bold')
+                        ax_roi.set_ylabel('ROI (%)')
+                        ax_roi.grid(True, alpha=0.3, axis='y')
+                        
+                        for bar, lev in zip(bars, levs):
+                            height = bar.get_height()
+                            weight = 'bold' if lev == 5 else 'normal'
+                            ax_roi.text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height:.1f}%', ha='center', 
+                                    va='bottom' if height > 0 else 'top', 
+                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
+                        plt.tight_layout()
+                    st.pyplot(fig_roi)
+                
+                with col2:
+                    fig_dd, ax_dd = plt.subplots(figsize=(8, 6))
+                    valid_results = [(lev, portfolio_results[lev]['metrics']['max_drawdown']) 
+                                    for lev in leverages if portfolio_results[lev] is not None]
+                    if valid_results:
+                        levs, dds = zip(*valid_results)
+                        colors = ['gold' if l == 5 else 'orange' for l in levs]
+                        bars = ax_dd.bar([f"{l}x" for l in levs], dds, color=colors, 
+                                      alpha=0.8, edgecolor='black', linewidth=2)
+                        ax_dd.set_title('Max Drawdown Portfela', fontsize=12, fontweight='bold')
+                        ax_dd.set_ylabel('Max Drawdown (%)')
+                        ax_dd.grid(True, alpha=0.3, axis='y')
+                        
+                        for bar, lev in zip(bars, levs):
+                            height = bar.get_height()
+                            weight = 'bold' if lev == 5 else 'normal'
+                            ax_dd.text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{height:.1f}%', ha='center', va='bottom',
+                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
+                        plt.tight_layout()
+                    st.pyplot(fig_dd)
             
             # WYNIKI - POSZCZEGÓLNE PARY
             st.header("📊 Wyniki poszczególnych par")
@@ -461,6 +526,7 @@ if len(uploaded_files) > 0:
                             ax_pairs_roi.text(width, bar.get_y() + bar.get_height()/2.,
                                             f'{width:.1f}%', ha='left' if width > 0 else 'right',
                                             va='center', fontweight='bold')
+                        plt.tight_layout()
                         st.pyplot(fig_pairs_roi)
                     
                     with col2:
@@ -471,6 +537,7 @@ if len(uploaded_files) > 0:
                                                  fontsize=12, fontweight='bold')
                         ax_pairs_trades.set_xlabel('Liczba transakcji')
                         ax_pairs_trades.grid(True, alpha=0.3, axis='x')
+                        plt.tight_layout()
                         st.pyplot(fig_pairs_trades)
             
             # Szczegóły wybranej pary
@@ -531,43 +598,58 @@ else:
     ### 👋 Witaj w Multi-Currency Pivot Points Backtest Tool!
     
     **Jak używać:**
-    1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi
-    2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, GBPPLN)
+    1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi lub kryptowalutami
+    2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, BTC)
     3. ⚙️ Ustaw parametry strategii
     4. 💰 Wybierz metodę alokacji kapitału
     5. 🚀 Kliknij "Uruchom backtest"
     6. 📊 Analizuj wyniki portfela i poszczególnych par!
     
+    **Obsługiwane formaty:**
+    - **Forex format**: Date, Price, Open, High, Low (format MM/DD/YYYY)
+    - **BTC/Crypto format**: Date, Price, Open, High, Low, Vol., Change % (z przecinkami w liczbach)
+    
     **Metody alokacji:**
     - **Równomiernie**: Kapitał 10,000 PLN / 3 pary = 3,333 PLN na parę
     - **Pełny kapitał**: 10,000 PLN na każdą parę (wyższe ryzyko/zwrot)
-    
-    **Format pliku CSV:**
-    - Kolumny: `Date`, `Price`, `Open`, `High`, `Low`
-    - Format daty: MM/DD/YYYY
-    - Separator: przecinek
     """)
     
     # Przykładowy format
-    st.subheader("📋 Przykładowy format pliku CSV:")
-    example_data = pd.DataFrame({
-        'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
-        'Price': [4.2537, 4.2456, 4.2418],
-        'Open': [4.2455, 4.2418, 4.2310],
-        'High': [4.2615, 4.2493, 4.2481],
-        'Low': [4.2394, 4.2378, 4.2284]
-    })
-    st.dataframe(example_data, use_container_width=True)
+    st.subheader("📋 Przykładowe formaty plików CSV:")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Format Forex:**")
+        example_forex = pd.DataFrame({
+            'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
+            'Price': [4.2537, 4.2456, 4.2418],
+            'Open': [4.2455, 4.2418, 4.2310],
+            'High': [4.2615, 4.2493, 4.2481],
+            'Low': [4.2394, 4.2378, 4.2284]
+        })
+        st.dataframe(example_forex, use_container_width=True)
+    
+    with col2:
+        st.markdown("**Format BTC/Crypto:**")
+        example_btc = pd.DataFrame({
+            'Date': ['11/01/2025', '10/31/2025', '10/30/2025'],
+            'Price': ['110,510.0', '109,820.0', '108,500.0'],
+            'Open': ['109,820.0', '108,500.0', '110,240.0'],
+            'High': ['110,750.0', '111,270.0', '111,720.0'],
+            'Low': ['109,600.0', '108,490.0', '106,510.0']
+        })
+        st.dataframe(example_btc, use_container_width=True)
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 O strategii")
 st.sidebar.info(f"""
 **Multi-Currency Portfolio** łączy sygnały z różnych par walutowych 
-w jeden zdywersyfikowany portfel, co może zmniejszyć ryzyko i zwiększyć 
-stabilność zwrotów.
+i kryptowalut w jeden zdywersyfikowany portfel.
 
 **Duration:** {holding_days} dni
+**Pivot Points:** Obliczone z {lookback_days} dni wstecz
 """)
 
 st.sidebar.markdown("---")
