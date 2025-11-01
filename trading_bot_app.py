@@ -74,6 +74,12 @@ holding_days = st.sidebar.slider(
     step=1
 )
 
+strategy_mode = st.sidebar.radio(
+    "Strategia transakcyjna:",
+    options=["Both (Buy & Sell)", "Buy Only", "Sell Only"],
+    help="Both = kupuj i sprzedawaj\nBuy Only = tylko kupuj\nSell Only = tylko sprzedawaj (short)"
+)
+
 leverages = st.sidebar.multiselect(
     "Wybierz lewary do przetestowania",
     options=[1, 2, 3, 5, 10, 15, 20],
@@ -145,7 +151,7 @@ def calculate_pivot_points(high, low, close):
     s3 = low - 2 * (high - pp)
     return pp, r1, r2, r3, s1, s2, s3
 
-def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding_days, pair_name=""):
+def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding_days, pair_name="", strategy_mode="Both (Buy & Sell)"):
     """Uruchom backtest z duration N dni"""
     mondays = df[df['DayOfWeek'] == 0].copy()
     trades = []
@@ -176,12 +182,22 @@ def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding
                 signal = None
                 pnl_pct = 0
                 
-                if monday_price <= buy_threshold:
-                    signal = 'BUY'
-                    pnl_pct = ((exit_price - monday_price) / monday_price) * 100
-                elif monday_price >= sell_threshold:
-                    signal = 'SELL'
-                    pnl_pct = ((monday_price - exit_price) / monday_price) * 100
+                # Określ sygnał na podstawie strategii
+                if strategy_mode == "Both (Buy & Sell)":
+                    if monday_price <= buy_threshold:
+                        signal = 'BUY'
+                        pnl_pct = ((exit_price - monday_price) / monday_price) * 100
+                    elif monday_price >= sell_threshold:
+                        signal = 'SELL'
+                        pnl_pct = ((monday_price - exit_price) / monday_price) * 100
+                elif strategy_mode == "Buy Only":
+                    if monday_price <= buy_threshold:
+                        signal = 'BUY'
+                        pnl_pct = ((exit_price - monday_price) / monday_price) * 100
+                elif strategy_mode == "Sell Only":
+                    if monday_price >= sell_threshold:
+                        signal = 'SELL'
+                        pnl_pct = ((monday_price - exit_price) / monday_price) * 100
                 
                 if signal:
                     pnl_leveraged = pnl_pct * leverage
@@ -319,7 +335,7 @@ if len(uploaded_files) > 0:
                     else:
                         capital_for_pair = initial_capital
                     
-                    trades = run_backtest(df, threshold, lookback_days, lev, capital_for_pair, holding_days, name)
+                    trades = run_backtest(df, threshold, lookback_days, lev, capital_for_pair, holding_days, name, strategy_mode)
                     
                     if trades is not None:
                         pair_trades.append(trades)
@@ -389,7 +405,7 @@ if len(uploaded_files) > 0:
                 )
                 
                 st.caption(f"🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny | "
-                          f"Alokacja: {capital_per_pair}")
+                          f"Alokacja: {capital_per_pair} | Strategia: {strategy_mode}")
                 
                 # Wykres kapitału portfela
                 st.subheader("📈 Kapitał Portfela w czasie")
@@ -601,9 +617,15 @@ else:
     1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi lub kryptowalutami
     2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, BTC)
     3. ⚙️ Ustaw parametry strategii (lookback, próg, holding 1-20 dni, lewary)
-    4. 💰 Wybierz metodę alokacji kapitału
-    5. 🚀 Kliknij "Uruchom backtest"
-    6. 📊 Analizuj wyniki portfela i poszczególnych par!
+    4. 📊 Wybierz strategię transakcyjną (Both/Buy Only/Sell Only)
+    5. 💰 Wybierz metodę alokacji kapitału
+    6. 🚀 Kliknij "Uruchom backtest"
+    7. 📊 Analizuj wyniki portfela i poszczególnych par!
+    
+    **Strategie transakcyjne:**
+    - **Both (Buy & Sell)**: Kupuj gdy cena ≤ threshold poniżej PP, sprzedawaj gdy ≥ threshold powyżej PP
+    - **Buy Only**: Tylko pozycje długie (long) - kupuj gdy cena poniżej PP
+    - **Sell Only**: Tylko pozycje krótkie (short) - sprzedawaj gdy cena powyżej PP
     
     **Obsługiwane formaty:**
     - **Forex format**: Date, Price, Open, High, Low (format MM/DD/YYYY)
@@ -649,6 +671,11 @@ st.sidebar.markdown("### 📚 O strategii")
 st.sidebar.info(f"""
 **Multi-Currency Portfolio** łączy sygnały z różnych par walutowych 
 i kryptowalut w jeden zdywersyfikowany portfel.
+
+**Strategia:** {strategy_mode}
+- **Both**: Kupuj gdy cena poniżej PP, sprzedawaj gdy powyżej
+- **Buy Only**: Tylko pozycje długie (long)
+- **Sell Only**: Tylko pozycje krótkie (short)
 
 **Duration:** {holding_days} dni (1-20)
 **Pivot Points:** Obliczone z {lookback_days} dni wstecz
