@@ -1,94 +1,32 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
-import io
+from datetime import datetime, timedelta
 
-# Konfiguracja strony
-st.set_page_config(
-    page_title="Pivot Points Backtest", 
-    page_icon="📊",
-    layout="wide"
-)
+# Wczytaj dane
+df = pd.read_csv('/mnt/user-data/uploads/EUR_PLN_Historical_Data__1_.csv')
 
-# Tytuł aplikacji
-st.title("📊 Pivot Points Backtester")
-st.markdown("### Testuj strategię pivot points na różnych parach walutowych i lewarach")
+# Usuń BOM i przetwórz dane
+df.columns = df.columns.str.replace('ï»¿', '')
+df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y')
+df = df.sort_values('Date').reset_index(drop=True)
 
-# Sidebar - parametry
-st.sidebar.header("⚙️ Parametry strategii")
+# Konwersja kolumn na float
+for col in ['Price', 'Open', 'High', 'Low']:
+    df[col] = df[col].astype(float)
 
-# Upload pliku
-uploaded_file = st.sidebar.file_uploader(
-    "Wgraj plik CSV z danymi", 
-    type=['csv'],
-    help="Plik musi zawierać kolumny: Date, Price, Open, High, Low"
-)
+# Dodaj dzień tygodnia
+df['DayOfWeek'] = df['Date'].dt.dayofweek  # 0=Poniedziałek, 4=Piątek
 
-# Parametry strategii
-lookback_days = st.sidebar.slider(
-    "Liczba dni do obliczenia pivot points",
-    min_value=5,
-    max_value=50,
-    value=20,
-    step=5
-)
+print("Zakres danych:", df['Date'].min(), "do", df['Date'].max())
+print("Liczba rekordów:", len(df))
 
-threshold = st.sidebar.slider(
-    "Próg ±% od Pivot Point",
-    min_value=0.1,
-    max_value=3.0,
-    value=0.5,
-    step=0.1
-)
-
-leverages = st.sidebar.multiselect(
-    "Wybierz lewary do przetestowania",
-    options=[1, 2, 3, 5, 10, 15, 20],
-    default=[1, 5, 10, 20]
-)
-
-initial_capital = st.sidebar.number_input(
-    "Kapitał początkowy",
-    min_value=1000,
-    max_value=1000000,
-    value=10000,
-    step=1000
-)
-
-# Funkcje
-@st.cache_data
-def load_and_prepare_data(uploaded_file):
-    """Wczytaj i przygotuj dane"""
-    try:
-        df = pd.read_csv(uploaded_file)
-        
-        # Usuń BOM jeśli istnieje
-        df.columns = df.columns.str.replace('ï»¿', '').str.strip()
-        
-        # Parsuj datę
-        df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y', errors='coerce')
-        if df['Date'].isna().any():
-            df['Date'] = pd.to_datetime(df['Date'], infer_datetime_format=True)
-        
-        df = df.sort_values('Date').reset_index(drop=True)
-        
-        # Konwersja do float
-        for col in ['Price', 'Open', 'High', 'Low']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Dodaj dzień tygodnia
-        df['DayOfWeek'] = df['Date'].dt.dayofweek
-        
-        return df, None
-    except Exception as e:
-        return None, str(e)
-
+# Funkcja do obliczania pivot points
 def calculate_pivot_points(high, low, close):
-    """Oblicz pivot points"""
+    """
+    Oblicza klasyczne pivot points
+    """
     pp = (high + low + close) / 3
     r1 = 2 * pp - low
     r2 = pp + (high - low)
@@ -96,339 +34,322 @@ def calculate_pivot_points(high, low, close):
     s1 = 2 * pp - high
     s2 = pp - (high - low)
     s3 = low - 2 * (high - pp)
+    
     return pp, r1, r2, r3, s1, s2, s3
 
-def run_backtest(df, threshold_pct, lookback, leverage, initial_capital):
-    """Uruchom backtest"""
-    mondays = df[df['DayOfWeek'] == 0].copy()
-    trades = []
+print("\n" + "="*100)
+print("NOWA STRATEGIA:")
+print("="*100)
+print("1. W piątek: Oblicz pivot points z ostatnich 20 dni")
+print("2. W piątek: Sprawdź czy kurs zamknięcia jest <= S3 lub >= R3")
+print("3. W poniedziałek: Otwórz pozycję po cenie otwarcia")
+print("4. Po 5 dniach: Zamknij pozycję")
+print("="*100)
+
+# Znajdź wszystkie piątki
+fridays = df[df['DayOfWeek'] == 4].copy()
+print(f"\nZnaleziono {len(fridays)} piątków")
+
+# Dla każdego piątku sprawdź sygnał
+trades = []
+LOOKBACK_DAYS = 20
+
+for idx, friday_row in fridays.iterrows():
+    friday_date = friday_row['Date']
+    friday_close = friday_row['Price']  # Cena zamknięcia w piątek
     
-    for idx, monday_row in mondays.iterrows():
-        monday_date = monday_row['Date']
-        monday_price = monday_row['Open']
+    # Znajdź ostatnie 20 dni PRZED piątkiem (włącznie z piątkiem)
+    prev_days = df[df['Date'] <= friday_date].tail(20)
+    
+    if len(prev_days) >= 20:
+        # Oblicz pivot points z ostatnich 20 dni
+        high_20d = prev_days['High'].max()
+        low_20d = prev_days['Low'].min()
+        close_20d = prev_days['Price'].iloc[-2] if len(prev_days) > 1 else prev_days['Price'].iloc[-1]  # Przedostatnie zamknięcie
         
-        prev_days = df[df['Date'] < monday_date].tail(lookback)
+        pp, r1, r2, r3, s1, s2, s3 = calculate_pivot_points(high_20d, low_20d, close_20d)
         
-        if len(prev_days) >= lookback:
-            high_period = prev_days['High'].max()
-            low_period = prev_days['Low'].min()
-            close_period = prev_days['Price'].iloc[-1]
+        # Sprawdź sygnał w piątek (zmienione na S1/R1 bo S3/R3 zbyt ekstremalne)
+        signal = None
+        if friday_close <= s1:
+            signal = 'BUY'
+        elif friday_close >= r1:
+            signal = 'SELL'
+        
+        if signal:
+            # Znajdź następny poniedziałek
+            future_dates = df[df['Date'] > friday_date]
+            monday = future_dates[future_dates['DayOfWeek'] == 0].head(1)
             
-            pp, r1, r2, r3, s1, s2, s3 = calculate_pivot_points(high_period, low_period, close_period)
-            
-            buy_threshold = pp * (1 - threshold_pct/100)
-            sell_threshold = pp * (1 + threshold_pct/100)
-            
-            future_dates = df[df['Date'] > monday_date]
-            friday = future_dates[future_dates['DayOfWeek'] == 4].head(1)
-            
-            if not friday.empty:
-                friday_date = friday.iloc[0]['Date']
-                friday_price = friday.iloc[0]['Price']
+            if not monday.empty:
+                monday_date = monday.iloc[0]['Date']
+                monday_open = monday.iloc[0]['Open']  # Otwieramy po cenie otwarcia w poniedziałek
                 
-                signal = None
-                pnl_pct = 0
+                # Znajdź dzień zamknięcia (5 dni roboczych po poniedziałku)
+                days_after_monday = df[df['Date'] > monday_date].head(5)
                 
-                if monday_price <= buy_threshold:
-                    signal = 'BUY'
-                    pnl_pct = ((friday_price - monday_price) / monday_price) * 100
-                elif monday_price >= sell_threshold:
-                    signal = 'SELL'
-                    pnl_pct = ((monday_price - friday_price) / monday_price) * 100
-                
-                if signal:
-                    pnl_leveraged = pnl_pct * leverage
+                if len(days_after_monday) >= 5:
+                    close_date = days_after_monday.iloc[4]['Date']  # 5-ty dzień
+                    close_price = days_after_monday.iloc[4]['Price']  # Cena zamknięcia
+                    
+                    # Oblicz PnL
+                    if signal == 'BUY':
+                        pnl_pct = ((close_price - monday_open) / monday_open) * 100
+                    else:  # SELL
+                        pnl_pct = ((monday_open - close_price) / monday_open) * 100
+                    
                     trades.append({
-                        'Monday_Date': monday_date,
-                        'Friday_Date': friday_date,
+                        'Friday_Signal_Date': friday_date,
+                        'Friday_Close': friday_close,
+                        'Monday_Entry_Date': monday_date,
+                        'Monday_Entry_Price': monday_open,
+                        'Close_Date': close_date,
+                        'Close_Price': close_price,
                         'Signal': signal,
-                        'Entry_Price': monday_price,
-                        'Exit_Price': friday_price,
                         'PnL_%': pnl_pct,
-                        'PnL_Leveraged_%': pnl_leveraged,
+                        'PP': pp,
+                        'S3': s3,
+                        'R3': r3,
+                        'High_20d': high_20d,
+                        'Low_20d': low_20d,
                         'Year': monday_date.year,
                         'Month': monday_date.month,
+                        'Year_Month': monday_date.to_period('M')
                     })
-    
-    if not trades:
-        return None
-    
-    trades_df = pd.DataFrame(trades)
-    
-    # Oblicz kapitał
-    trades_df['Capital'] = initial_capital
-    for i in range(len(trades_df)):
-        if i > 0:
-            trades_df.loc[i, 'Capital'] = trades_df.loc[i-1, 'Capital'] * (1 + trades_df.loc[i, 'PnL_Leveraged_%'] / 100)
-        else:
-            trades_df.loc[i, 'Capital'] = initial_capital * (1 + trades_df.loc[i, 'PnL_Leveraged_%'] / 100)
-    
-    return trades_df
 
-def calculate_metrics(trades_df, initial_capital):
-    """Oblicz metryki"""
-    if trades_df is None or len(trades_df) == 0:
-        return None
+# Utwórz DataFrame z wynikami
+if not trades:
+    print("\n" + "="*100)
+    print("❌ BRAK TRANSAKCJI!")
+    print("="*100)
+    print("Strategia nie wygenerowała żadnych sygnałów spełniających kryteria (piątek <= S3 lub >= R3)")
+    print("\nSprawdźmy jak blisko były ceny do poziomów S3/R3...")
     
-    total_return = trades_df['PnL_Leveraged_%'].sum()
-    final_capital = trades_df['Capital'].iloc[-1]
-    roi = ((final_capital / initial_capital) - 1) * 100
-    
-    winning = len(trades_df[trades_df['PnL_Leveraged_%'] > 0])
-    losing = len(trades_df[trades_df['PnL_Leveraged_%'] < 0])
-    win_rate = (winning / len(trades_df)) * 100 if len(trades_df) > 0 else 0
-    
-    trades_df['Cumulative_Return'] = trades_df['PnL_Leveraged_%'].cumsum()
-    max_dd = (trades_df['Cumulative_Return'].cummax() - trades_df['Cumulative_Return']).max()
-    
-    return {
-        'num_trades': len(trades_df),
-        'total_return': total_return,
-        'roi': roi,
-        'final_capital': final_capital,
-        'profit_loss': final_capital - initial_capital,
-        'win_rate': win_rate,
-        'winning_trades': winning,
-        'losing_trades': losing,
-        'avg_return': trades_df['PnL_Leveraged_%'].mean(),
-        'best_trade': trades_df['PnL_Leveraged_%'].max(),
-        'worst_trade': trades_df['PnL_Leveraged_%'].min(),
-        'max_drawdown': max_dd
-    }
-
-# Główna logika
-if uploaded_file is not None:
-    # Wczytaj dane
-    df, error = load_and_prepare_data(uploaded_file)
-    
-    if error:
-        st.error(f"❌ Błąd wczytywania pliku: {error}")
-        st.info("💡 Plik musi zawierać kolumny: Date, Price, Open, High, Low")
-    else:
-        st.success(f"✅ Wczytano {len(df)} rekordów z okresu {df['Date'].min().date()} do {df['Date'].max().date()}")
+    # Analiza
+    analysis_data = []
+    for idx, friday_row in fridays.iterrows():
+        friday_date = friday_row['Date']
+        friday_close = friday_row['Price']
+        prev_days = df[df['Date'] <= friday_date].tail(20)
         
-        # Pokaż przykładowe dane
-        with st.expander("📋 Podgląd danych"):
-            st.dataframe(df.head(10))
-        
-        # Uruchom backtesty dla wybranych lewarów
-        if st.sidebar.button("🚀 Uruchom backtest", type="primary"):
-            results = {}
+        if len(prev_days) >= 20:
+            high_20d = prev_days['High'].max()
+            low_20d = prev_days['Low'].min()
+            close_20d = prev_days['Price'].iloc[-2] if len(prev_days) > 1 else prev_days['Price'].iloc[-1]
+            pp, r1, r2, r3, s1, s2, s3 = calculate_pivot_points(high_20d, low_20d, close_20d)
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            dist_s3 = ((friday_close - s3) / s3) * 100
+            dist_r3 = ((friday_close - r3) / r3) * 100
             
-            for i, lev in enumerate(leverages):
-                status_text.text(f"Testowanie lewaru {lev}x...")
-                trades = run_backtest(df, threshold, lookback_days, lev, initial_capital)
-                if trades is not None:
-                    metrics = calculate_metrics(trades, initial_capital)
-                    results[lev] = {'trades': trades, 'metrics': metrics}
-                else:
-                    results[lev] = None
-                progress_bar.progress((i + 1) / len(leverages))
-            
-            status_text.empty()
-            progress_bar.empty()
-            
-            if not results or all(v is None for v in results.values()):
-                st.warning("⚠️ Brak transakcji spełniających kryteria strategii. Spróbuj zmienić parametry.")
-            else:
-                # Tabela porównawcza
-                st.header("📊 Wyniki Backtestów")
-                
-                comparison_data = []
-                for lev in leverages:
-                    if results[lev] is not None:
-                        m = results[lev]['metrics']
-                        comparison_data.append({
-                            'Lewar': f"{lev}x",
-                            'Transakcje': m['num_trades'],
-                            'ROI (%)': round(m['roi'], 2),
-                            'Kapitał końcowy': f"{m['final_capital']:,.2f}",
-                            'Zysk/Strata': f"{m['profit_loss']:+,.2f}",
-                            'Win Rate (%)': round(m['win_rate'], 1),
-                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
-                            'Najlepsza (%)': round(m['best_trade'], 2),
-                            'Najgorsza (%)': round(m['worst_trade'], 2)
-                        })
-                    else:
-                        comparison_data.append({
-                            'Lewar': f"{lev}x",
-                            'Transakcje': 0,
-                            'ROI (%)': 0,
-                            'Kapitał końcowy': f"{initial_capital:,.2f}",
-                            'Zysk/Strata': "0.00",
-                            'Win Rate (%)': 0,
-                            'Max Drawdown (%)': 0,
-                            'Najlepsza (%)': 0,
-                            'Najgorsza (%)': 0
-                        })
-                
-                comparison_df = pd.DataFrame(comparison_data)
-                
-                # Podświetl najlepszy ROI
-                def highlight_best_roi(row):
-                    if row['ROI (%)'] == comparison_df['ROI (%)'].max() and row['ROI (%)'] > 0:
-                        return ['background-color: #90EE90'] * len(row)
-                    elif row['ROI (%)'] < 0:
-                        return ['background-color: #FFB6C1'] * len(row)
-                    return [''] * len(row)
-                
-                st.dataframe(
-                    comparison_df.style.apply(highlight_best_roi, axis=1),
-                    use_container_width=True
-                )
-                
-                # Wykresy
-                st.header("📈 Wizualizacje")
-                
-                # Wykres 1: Kapitał w czasie
-                fig1, ax1 = plt.subplots(figsize=(12, 6))
-                for lev in leverages:
-                    if results[lev] is not None:
-                        trades = results[lev]['trades']
-                        ax1.plot(trades['Monday_Date'], trades['Capital'], 
-                                label=f'Lewar {lev}x', linewidth=2, marker='o', markersize=3)
-                
-                ax1.axhline(y=initial_capital, color='black', linestyle='--', 
-                           linewidth=1, alpha=0.5, label='Kapitał początkowy')
-                ax1.set_title('Wartość Portfela w Czasie', fontsize=14, fontweight='bold')
-                ax1.set_xlabel('Data')
-                ax1.set_ylabel('Kapitał (PLN)')
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-                plt.xticks(rotation=45)
-                st.pyplot(fig1)
-                
-                # Wykres 2: ROI porównanie
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig2, ax2 = plt.subplots(figsize=(8, 6))
-                    valid_results = [(lev, results[lev]['metrics']['roi']) 
-                                    for lev in leverages if results[lev] is not None]
-                    if valid_results:
-                        levs, rois = zip(*valid_results)
-                        colors = ['green' if r > 0 else 'red' for r in rois]
-                        bars = ax2.bar([f"{l}x" for l in levs], rois, color=colors, alpha=0.7, edgecolor='black')
-                        ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
-                        ax2.set_title('ROI - Porównanie', fontsize=12, fontweight='bold')
-                        ax2.set_ylabel('ROI (%)')
-                        ax2.grid(True, alpha=0.3, axis='y')
-                        
-                        for bar in bars:
-                            height = bar.get_height()
-                            ax2.text(bar.get_x() + bar.get_width()/2., height,
-                                    f'{height:.1f}%', ha='center', 
-                                    va='bottom' if height > 0 else 'top', fontweight='bold')
-                    st.pyplot(fig2)
-                
-                with col2:
-                    fig3, ax3 = plt.subplots(figsize=(8, 6))
-                    valid_results = [(lev, results[lev]['metrics']['max_drawdown']) 
-                                    for lev in leverages if results[lev] is not None]
-                    if valid_results:
-                        levs, dds = zip(*valid_results)
-                        ax3.bar([f"{l}x" for l in levs], dds, color='orange', alpha=0.7, edgecolor='black')
-                        ax3.set_title('Max Drawdown - Porównanie', fontsize=12, fontweight='bold')
-                        ax3.set_ylabel('Max Drawdown (%)')
-                        ax3.grid(True, alpha=0.3, axis='y')
-                    st.pyplot(fig3)
-                
-                # Szczegóły dla wybranego lewaru
-                st.header("🔍 Szczegóły")
-                selected_lev = st.selectbox("Wybierz lewar do szczegółowej analizy:", leverages)
-                
-                if results[selected_lev] is not None:
-                    trades = results[selected_lev]['trades']
-                    metrics = results[selected_lev]['metrics']
-                    
-                    # Metryki w kolumnach
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Liczba transakcji", metrics['num_trades'])
-                        st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                    with col2:
-                        st.metric("ROI", f"{metrics['roi']:.2f}%", 
-                                 delta=f"{metrics['profit_loss']:+,.2f} PLN")
-                        st.metric("Kapitał końcowy", f"{metrics['final_capital']:,.2f} PLN")
-                    with col3:
-                        st.metric("Najlepsza transakcja", f"{metrics['best_trade']:.2f}%")
-                        st.metric("Najgorsza transakcja", f"{metrics['worst_trade']:.2f}%")
-                    with col4:
-                        st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-                        st.metric("Średni zwrot", f"{metrics['avg_return']:.2f}%")
-                    
-                    # Zwroty roczne
-                    st.subheader("📅 Zwroty roczne")
-                    yearly = trades.groupby('Year')['PnL_Leveraged_%'].agg(['sum', 'count']).round(2)
-                    yearly.columns = ['Suma (%)', 'Liczba transakcji']
-                    st.dataframe(yearly, use_container_width=True)
-                    
-                    # Tabela transakcji
-                    st.subheader("📋 Wszystkie transakcje")
-                    trades_display = trades[['Monday_Date', 'Friday_Date', 'Signal', 
-                                            'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
-                    trades_display['Monday_Date'] = trades_display['Monday_Date'].dt.strftime('%Y-%m-%d')
-                    trades_display['Friday_Date'] = trades_display['Friday_Date'].dt.strftime('%Y-%m-%d')
-                    trades_display = trades_display.round(4)
-                    st.dataframe(trades_display, use_container_width=True)
-                    
-                    # Download CSV
-                    csv = trades.to_csv(index=False)
-                    st.download_button(
-                        label="💾 Pobierz szczegóły transakcji (CSV)",
-                        data=csv,
-                        file_name=f"backtest_leverage_{selected_lev}x.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.warning(f"⚠️ Brak transakcji dla lewaru {selected_lev}x")
-
+            analysis_data.append({
+                'Date': friday_date,
+                'Close': friday_close,
+                'S3': s3,
+                'R3': r3,
+                'Dist_S3_%': dist_s3,
+                'Dist_R3_%': dist_r3
+            })
+    
+    analysis_df = pd.DataFrame(analysis_data)
+    print(f"\nNajbliższe S3: {analysis_df['Dist_S3_%'].min():.2f}% (powyżej)")
+    print(f"Najbliższe R3: {analysis_df['Dist_R3_%'].max():.2f}% (poniżej)")
+    
+    print("\n5 piątków najbliższych S3:")
+    closest_s3 = analysis_df.nsmallest(5, 'Dist_S3_%')[['Date', 'Close', 'S3', 'Dist_S3_%']]
+    print(closest_s3.to_string(index=False))
+    
+    print("\n5 piątków najbliższych R3:")
+    closest_r3 = analysis_df.nlargest(5, 'Dist_R3_%')[['Date', 'Close', 'R3', 'Dist_R3_%']]
+    print(closest_r3.to_string(index=False))
+    
 else:
-    # Instrukcja użycia
-    st.info("""
-    ### 👋 Witaj w Pivot Points Backtest Tool!
+    results_df = pd.DataFrame(trades)
     
-    **Jak używać:**
-    1. 📁 Wgraj plik CSV z danymi historycznymi w lewym panelu
-    2. ⚙️ Ustaw parametry strategii (lookback, próg, lewary)
-    3. 🚀 Kliknij "Uruchom backtest"
-    4. 📊 Analizuj wyniki i porównaj różne lewary!
+    print("\n" + "="*100)
+    print("WYNIKI NOWEJ STRATEGII")
+    print("="*100)
+    print(f"Liczba sygnałów z piątków: {len(results_df)}")
+    print(f"Transakcje BUY: {len(results_df[results_df['Signal'] == 'BUY'])}")
+    print(f"Transakcje SELL: {len(results_df[results_df['Signal'] == 'SELL'])}")
     
-    **Format pliku CSV:**
-    - Kolumny: `Date`, `Price`, `Open`, `High`, `Low`
-    - Format daty: MM/DD/YYYY
-    - Separator: przecinek
+    # Statystyki
+    total_return = results_df['PnL_%'].sum()
+    avg_return = results_df['PnL_%'].mean()
+    winning = len(results_df[results_df['PnL_%'] > 0])
+    losing = len(results_df[results_df['PnL_%'] < 0])
+    win_rate = (winning / len(results_df)) * 100 if len(results_df) > 0 else 0
     
-    **Strategia:**
-    - Oblicza pivot points z ostatnich N dni przed każdym poniedziałkiem
-    - Kupuje gdy cena ≤ X% poniżej Pivot Point
-    - Sprzedaje gdy cena ≥ X% powyżej Pivot Point
-    - Zamyka pozycje w najbliższy piątek
-    """)
+    print("\n" + "="*100)
+    print("STATYSTYKI BEZ LEWARU")
+    print("="*100)
+    print(f"Całkowita stopa zwrotu: {total_return:.2f}%")
+    print(f"Średnia stopa zwrotu: {avg_return:.3f}%")
+    print(f"Win rate: {win_rate:.1f}%")
+    print(f"Transakcje zyskowne: {winning}")
+    print(f"Transakcje stratne: {losing}")
+    print(f"Najlepsza transakcja: {results_df['PnL_%'].max():.3f}%")
+    print(f"Najgorsza transakcja: {results_df['PnL_%'].min():.3f}%")
     
-    # Przykładowy format danych
-    st.subheader("📋 Przykładowy format pliku CSV:")
-    example_data = pd.DataFrame({
-        'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
-        'Price': [4.2537, 4.2456, 4.2418],
-        'Open': [4.2455, 4.2418, 4.2310],
-        'High': [4.2615, 4.2493, 4.2481],
-        'Low': [4.2394, 4.2378, 4.2284]
-    })
-    st.dataframe(example_data, use_container_width=True)
+    # Zwroty roczne
+    print("\n" + "="*100)
+    print("ZWROTY ROCZNE")
+    print("="*100)
+    yearly = results_df.groupby('Year').agg({
+        'PnL_%': ['sum', 'mean', 'count']
+    }).round(3)
+    yearly.columns = ['Suma_%', 'Średnia_%', 'Liczba']
+    print(yearly)
+    
+    # Zwroty miesięczne
+    print("\n" + "="*100)
+    print("ZWROTY MIESIĘCZNE (Top 5 najlepszych i najgorszych)")
+    print("="*100)
+    monthly = results_df.groupby('Year_Month').agg({
+        'PnL_%': ['sum', 'count']
+    }).round(3)
+    monthly.columns = ['Suma_%', 'Liczba']
+    monthly_sorted = monthly.sort_values('Suma_%', ascending=False)
+    
+    print("\n✅ Najlepsze:")
+    print(monthly_sorted.head(5).to_string())
+    print("\n❌ Najgorsze:")
+    print(monthly_sorted.tail(5).to_string())
+    
+    # Szczegóły transakcji
+    print("\n" + "="*100)
+    print("WSZYSTKIE TRANSAKCJE")
+    print("="*100)
+    display_df = results_df[['Friday_Signal_Date', 'Monday_Entry_Date', 'Close_Date', 
+                              'Signal', 'Friday_Close', 'Monday_Entry_Price', 
+                              'Close_Price', 'S3', 'R3', 'PnL_%']].copy()
+    display_df['Friday_Signal_Date'] = display_df['Friday_Signal_Date'].dt.strftime('%Y-%m-%d')
+    display_df['Monday_Entry_Date'] = display_df['Monday_Entry_Date'].dt.strftime('%Y-%m-%d')
+    display_df['Close_Date'] = display_df['Close_Date'].dt.strftime('%Y-%m-%d')
+    print(display_df.round(4).to_string(index=False))
+    
+    # Zapisz
+    results_df.to_csv('/mnt/user-data/outputs/new_strategy_results.csv', index=False)
+    print("\n✅ Zapisano: new_strategy_results.csv")
+    
+    # Teraz przetestuj z lewarami
+    print("\n" + "="*100)
+    print("TESTOWANIE Z RÓŻNYMI LEWARAMI")
+    print("="*100)
+    
+    leverages = [1, 5, 10, 20]
+    INITIAL_CAPITAL = 10000
+    
+    leverage_results = []
+    
+    for lev in leverages:
+        results_df[f'PnL_Lev_{lev}x_%'] = results_df['PnL_%'] * lev
+        
+        # Oblicz kapitał
+        capital = [INITIAL_CAPITAL]
+        for i in range(len(results_df)):
+            new_capital = capital[-1] * (1 + results_df.iloc[i][f'PnL_Lev_{lev}x_%'] / 100)
+            capital.append(new_capital)
+        
+        results_df[f'Capital_{lev}x'] = capital[1:]
+        
+        final_capital = capital[-1]
+        roi = ((final_capital / INITIAL_CAPITAL) - 1) * 100
+        total_ret_lev = results_df[f'PnL_Lev_{lev}x_%'].sum()
+        
+        winning_lev = len(results_df[results_df[f'PnL_Lev_{lev}x_%'] > 0])
+        losing_lev = len(results_df[results_df[f'PnL_Lev_{lev}x_%'] < 0])
+        win_rate_lev = (winning_lev / len(results_df)) * 100
+        
+        # Drawdown
+        results_df[f'Cum_Return_{lev}x'] = results_df[f'PnL_Lev_{lev}x_%'].cumsum()
+        max_dd = (results_df[f'Cum_Return_{lev}x'].cummax() - results_df[f'Cum_Return_{lev}x']).max()
+        
+        leverage_results.append({
+            'Lewar': f'{lev}x',
+            'Transakcje': len(results_df),
+            'Zwrot_całk_%': round(total_ret_lev, 2),
+            'ROI_%': round(roi, 2),
+            'Kapitał_końcowy': round(final_capital, 2),
+            'Zysk_Strata': round(final_capital - INITIAL_CAPITAL, 2),
+            'Win_Rate_%': round(win_rate_lev, 1),
+            'Max_Drawdown_%': round(max_dd, 2),
+            'Najlepsza_%': round(results_df[f'PnL_Lev_{lev}x_%'].max(), 2),
+            'Najgorsza_%': round(results_df[f'PnL_Lev_{lev}x_%'].min(), 2)
+        })
+    
+    lev_comparison = pd.DataFrame(leverage_results)
+    print("\n" + "="*100)
+    print("PORÓWNANIE LEWARÓW")
+    print("="*100)
+    print(lev_comparison.to_string(index=False))
+    
+    # Zapisz z lewarami
+    results_df.to_csv('/mnt/user-data/outputs/new_strategy_with_leverage.csv', index=False)
+    print("\n✅ Zapisano: new_strategy_with_leverage.csv")
+    
+    # Wykresy
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Nowa Strategia: Sygnał z Piątku + Trzymanie 5 Dni', fontsize=16, fontweight='bold')
+    
+    # 1. Kapitał w czasie
+    ax1 = axes[0, 0]
+    for lev in leverages:
+        ax1.plot(results_df['Monday_Entry_Date'], results_df[f'Capital_{lev}x'], 
+                label=f'Lewar {lev}x', linewidth=2, marker='o', markersize=3)
+    ax1.axhline(y=INITIAL_CAPITAL, color='black', linestyle='--', linewidth=1, alpha=0.5)
+    ax1.set_title('Wartość Portfela w Czasie', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Data')
+    ax1.set_ylabel('Kapitał (PLN)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # 2. ROI porównanie
+    ax2 = axes[0, 1]
+    rois = [r['ROI_%'] for r in leverage_results]
+    colors = ['green' if r > 0 else 'red' for r in rois]
+    bars = ax2.bar([r['Lewar'] for r in leverage_results], rois, color=colors, alpha=0.7, edgecolor='black')
+    ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax2.set_title('ROI - Porównanie Lewarów', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('ROI (%)')
+    ax2.grid(True, alpha=0.3, axis='y')
+    for bar, val in zip(bars, rois):
+        height = bar.get_height()
+        ax2.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.1f}%', ha='center', va='bottom' if height > 0 else 'top', fontweight='bold')
+    
+    # 3. Zwroty roczne
+    ax3 = axes[1, 0]
+    yearly_data = results_df.groupby('Year')['PnL_%'].sum()
+    colors_yr = ['green' if y > 0 else 'red' for y in yearly_data]
+    ax3.bar(yearly_data.index.astype(str), yearly_data.values, color=colors_yr, alpha=0.7, edgecolor='black')
+    ax3.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax3.set_title('Zwroty Roczne (Bez Lewaru)', fontsize=12, fontweight='bold')
+    ax3.set_ylabel('Zwrot (%)')
+    ax3.grid(True, alpha=0.3, axis='y')
+    
+    # 4. Kapitał końcowy
+    ax4 = axes[1, 1]
+    final_caps = [r['Kapitał_końcowy'] for r in leverage_results]
+    colors_cap = ['green' if c > INITIAL_CAPITAL else 'red' for c in final_caps]
+    bars_cap = ax4.bar([r['Lewar'] for r in leverage_results], final_caps, 
+                       color=colors_cap, alpha=0.7, edgecolor='black')
+    ax4.axhline(y=INITIAL_CAPITAL, color='black', linestyle='--', linewidth=2, label='Start')
+    ax4.set_title('Kapitał Końcowy (Start: 10,000 PLN)', fontsize=12, fontweight='bold')
+    ax4.set_ylabel('Kapitał (PLN)')
+    ax4.legend()
+    ax4.grid(True, alpha=0.3, axis='y')
+    
+    for bar, val, roi in zip(bars_cap, final_caps, rois):
+        height = bar.get_height()
+        ax4.text(bar.get_x() + bar.get_width()/2., height + 200,
+                f'{val:,.0f}\n({roi:+.1f}%)', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.savefig('/mnt/user-data/outputs/new_strategy_analysis.png', dpi=300, bbox_inches='tight')
+    print("\n✅ Wykres zapisany: new_strategy_analysis.png")
 
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 O strategii")
-st.sidebar.info("""
-**Pivot Points** to poziomy wsparcia i oporu obliczone na podstawie 
-historycznych cen (High, Low, Close). Strategia wykorzystuje odchylenia 
-od tych poziomów do generowania sygnałów kupna i sprzedaży.
-""")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("Made with ❤️ using Streamlit")
+print("\n" + "="*100)
+print("ANALIZA ZAKOŃCZONA")
+print("="*100)
