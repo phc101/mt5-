@@ -14,20 +14,42 @@ st.set_page_config(
 )
 
 # Tytuł aplikacji
-st.title("📊 Pivot Points Backtester")
-st.markdown("### Testuj strategię pivot points na różnych parach walutowych i lewarach")
+st.title("📊 Pivot Points Backtester - Multi-Currency Portfolio")
+st.markdown("### Testuj strategię pivot points na koszyku par walutowych")
 
 # Sidebar - parametry
 st.sidebar.header("⚙️ Parametry strategii")
 
-# Upload pliku
-uploaded_file = st.sidebar.file_uploader(
-    "Wgraj plik CSV z danymi", 
-    type=['csv'],
-    help="Plik musi zawierać kolumny: Date, Price, Open, High, Low"
-)
+# Upload plików
+st.sidebar.subheader("📁 Wgraj dane par walutowych")
+uploaded_files = []
+pair_names = []
+
+for i in range(5):
+    col1, col2 = st.sidebar.columns([3, 1])
+    with col1:
+        file = st.sidebar.file_uploader(
+            f"Para walutowa #{i+1}", 
+            type=['csv'],
+            key=f"file_{i}",
+            help="Plik CSV z kolumnami: Date, Price, Open, High, Low"
+        )
+    with col2:
+        name = st.sidebar.text_input(
+            "Nazwa",
+            value=f"Para{i+1}",
+            key=f"name_{i}",
+            label_visibility="collapsed"
+        )
+    
+    if file is not None:
+        uploaded_files.append(file)
+        pair_names.append(name)
 
 # Parametry strategii
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ Parametry")
+
 lookback_days = st.sidebar.slider(
     "Liczba dni do obliczenia pivot points",
     min_value=5,
@@ -64,6 +86,12 @@ initial_capital = st.sidebar.number_input(
     max_value=1000000,
     value=10000,
     step=1000
+)
+
+capital_per_pair = st.sidebar.radio(
+    "Alokacja kapitału:",
+    options=["Równomiernie na wszystkie pary", "Pełny kapitał na każdą parę"],
+    help="Równomiernie = kapitał podzielony przez liczbę par\nPełny = pełny kapitał na każdą parę (wyższe ryzyko)"
 )
 
 # Funkcje
@@ -106,7 +134,7 @@ def calculate_pivot_points(high, low, close):
     s3 = low - 2 * (high - pp)
     return pp, r1, r2, r3, s1, s2, s3
 
-def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding_days):
+def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding_days, pair_name=""):
     """Uruchom backtest z duration N dni"""
     mondays = df[df['DayOfWeek'] == 0].copy()
     trades = []
@@ -156,6 +184,7 @@ def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding
                         'PnL_Leveraged_%': pnl_leveraged,
                         'Year': monday_date.year,
                         'Month': monday_date.month,
+                        'Pair': pair_name
                     })
     
     if not trades:
@@ -173,12 +202,39 @@ def run_backtest(df, threshold_pct, lookback, leverage, initial_capital, holding
     
     return trades_df
 
+def combine_portfolio_trades(all_trades, initial_capital, num_pairs, allocation_method):
+    """Połącz transakcje z różnych par w jeden portfel"""
+    if not all_trades:
+        return None
+    
+    # Wszystkie transakcje z wszystkich par
+    combined = pd.concat(all_trades, ignore_index=True)
+    combined = combined.sort_values('Entry_Date').reset_index(drop=True)
+    
+    # Oblicz kapitał w zależności od metody alokacji
+    if allocation_method == "Równomiernie na wszystkie pary":
+        # Kapitał podzielony na pary
+        capital_multiplier = 1.0 / num_pairs
+    else:
+        # Pełny kapitał na każdą parę
+        capital_multiplier = 1.0
+    
+    combined['Capital'] = initial_capital
+    for i in range(len(combined)):
+        if i > 0:
+            pnl_effect = combined.loc[i, 'PnL_Leveraged_%'] * capital_multiplier / 100
+            combined.loc[i, 'Capital'] = combined.loc[i-1, 'Capital'] * (1 + pnl_effect)
+        else:
+            pnl_effect = combined.loc[i, 'PnL_Leveraged_%'] * capital_multiplier / 100
+            combined.loc[i, 'Capital'] = initial_capital * (1 + pnl_effect)
+    
+    return combined
+
 def calculate_metrics(trades_df, initial_capital):
     """Oblicz metryki"""
     if trades_df is None or len(trades_df) == 0:
         return None
     
-    total_return = trades_df['PnL_Leveraged_%'].sum()
     final_capital = trades_df['Capital'].iloc[-1]
     roi = ((final_capital / initial_capital) - 1) * 100
     
@@ -186,12 +242,11 @@ def calculate_metrics(trades_df, initial_capital):
     losing = len(trades_df[trades_df['PnL_Leveraged_%'] < 0])
     win_rate = (winning / len(trades_df)) * 100 if len(trades_df) > 0 else 0
     
-    trades_df['Cumulative_Return'] = trades_df['PnL_Leveraged_%'].cumsum()
+    trades_df['Cumulative_Return'] = (trades_df['Capital'] / initial_capital - 1) * 100
     max_dd = (trades_df['Cumulative_Return'].cummax() - trades_df['Cumulative_Return']).max()
     
     return {
         'num_trades': len(trades_df),
-        'total_return': total_return,
         'roi': roi,
         'final_capital': final_capital,
         'profit_loss': final_capital - initial_capital,
@@ -205,51 +260,95 @@ def calculate_metrics(trades_df, initial_capital):
     }
 
 # Główna logika
-if uploaded_file is not None:
-    # Wczytaj dane
-    df, error = load_and_prepare_data(uploaded_file)
+if len(uploaded_files) > 0:
+    st.success(f"✅ Wczytano {len(uploaded_files)} par walutowych: {', '.join(pair_names)}")
     
-    if error:
-        st.error(f"❌ Błąd wczytywania pliku: {error}")
-        st.info("💡 Plik musi zawierać kolumny: Date, Price, Open, High, Low")
+    # Wczytaj wszystkie dane
+    all_data = {}
+    for file, name in zip(uploaded_files, pair_names):
+        df, error = load_and_prepare_data(file)
+        if error:
+            st.error(f"❌ Błąd w pliku {name}: {error}")
+        else:
+            all_data[name] = df
+            st.info(f"📊 {name}: {len(df)} rekordów ({df['Date'].min().date()} - {df['Date'].max().date()})")
+    
+    if len(all_data) == 0:
+        st.error("❌ Nie udało się wczytać żadnych danych")
     else:
-        st.success(f"✅ Wczytano {len(df)} rekordów z okresu {df['Date'].min().date()} do {df['Date'].max().date()}")
-        
         # Pokaż przykładowe dane
-        with st.expander("📋 Podgląd danych"):
-            st.dataframe(df.head(10))
+        with st.expander("📋 Podgląd danych wszystkich par"):
+            for name, df in all_data.items():
+                st.subheader(name)
+                st.dataframe(df.head(5))
         
-        # Uruchom backtesty dla wybranych lewarów
+        # Uruchom backtesty
         if st.sidebar.button("🚀 Uruchom backtest", type="primary"):
-            results = {}
+            results_by_pair = {}
+            portfolio_results = {}
             
             progress_bar = st.progress(0)
             status_text = st.empty()
+            total_steps = len(leverages) * (len(all_data) + 1)
+            current_step = 0
             
-            for i, lev in enumerate(leverages):
-                status_text.text(f"Testowanie lewaru {lev}x...")
-                trades = run_backtest(df, threshold, lookback_days, lev, initial_capital, holding_days)
-                if trades is not None:
-                    metrics = calculate_metrics(trades, initial_capital)
-                    results[lev] = {'trades': trades, 'metrics': metrics}
+            for lev in leverages:
+                pair_trades = []
+                pair_results = {}
+                
+                # Backtest dla każdej pary osobno
+                for name, df in all_data.items():
+                    status_text.text(f"Testowanie {name} z lewarem {lev}x...")
+                    
+                    if capital_per_pair == "Równomiernie na wszystkie pary":
+                        capital_for_pair = initial_capital / len(all_data)
+                    else:
+                        capital_for_pair = initial_capital
+                    
+                    trades = run_backtest(df, threshold, lookback_days, lev, capital_for_pair, holding_days, name)
+                    
+                    if trades is not None:
+                        pair_trades.append(trades)
+                        metrics = calculate_metrics(trades, capital_for_pair)
+                        pair_results[name] = {'trades': trades, 'metrics': metrics}
+                    else:
+                        pair_results[name] = None
+                    
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+                
+                results_by_pair[lev] = pair_results
+                
+                # Połącz wszystkie transakcje w portfel
+                status_text.text(f"Tworzenie portfela dla lewaru {lev}x...")
+                if pair_trades:
+                    portfolio_trades = combine_portfolio_trades(pair_trades, initial_capital, len(all_data), capital_per_pair)
+                    if portfolio_trades is not None:
+                        portfolio_metrics = calculate_metrics(portfolio_trades, initial_capital)
+                        portfolio_results[lev] = {'trades': portfolio_trades, 'metrics': portfolio_metrics}
+                    else:
+                        portfolio_results[lev] = None
                 else:
-                    results[lev] = None
-                progress_bar.progress((i + 1) / len(leverages))
+                    portfolio_results[lev] = None
+                
+                current_step += 1
+                progress_bar.progress(current_step / total_steps)
             
             status_text.empty()
             progress_bar.empty()
             
-            if not results or all(v is None for v in results.values()):
-                st.warning("⚠️ Brak transakcji spełniających kryteria strategii. Spróbuj zmienić parametry.")
+            # WYNIKI - PORTFEL
+            st.header("🎯 Wyniki Portfela (Wszystkie pary razem)")
+            
+            if not portfolio_results or all(v is None for v in portfolio_results.values()):
+                st.warning("⚠️ Brak transakcji w portfelu")
             else:
-                # Tabela porównawcza
-                st.header("📊 Wyniki Backtestów")
-                
-                comparison_data = []
+                # Tabela porównawcza portfela
+                portfolio_comparison = []
                 for lev in leverages:
-                    if results[lev] is not None:
-                        m = results[lev]['metrics']
-                        comparison_data.append({
+                    if portfolio_results[lev] is not None:
+                        m = portfolio_results[lev]['metrics']
+                        portfolio_comparison.append({
                             'Lewar': f"{lev}x",
                             'Transakcje': m['num_trades'],
                             'ROI (%)': round(m['roi'], 2),
@@ -257,191 +356,199 @@ if uploaded_file is not None:
                             'Zysk/Strata': f"{m['profit_loss']:+,.2f}",
                             'Win Rate (%)': round(m['win_rate'], 1),
                             'Max Drawdown (%)': round(m['max_drawdown'], 2),
-                            'Najlepsza (%)': round(m['best_trade'], 2),
-                            'Najgorsza (%)': round(m['worst_trade'], 2)
-                        })
-                    else:
-                        comparison_data.append({
-                            'Lewar': f"{lev}x",
-                            'Transakcje': 0,
-                            'ROI (%)': 0,
-                            'Kapitał końcowy': f"{initial_capital:,.2f}",
-                            'Zysk/Strata': "0.00",
-                            'Win Rate (%)': 0,
-                            'Max Drawdown (%)': 0,
-                            'Najlepsza (%)': 0,
-                            'Najgorsza (%)': 0
                         })
                 
-                comparison_df = pd.DataFrame(comparison_data)
+                portfolio_df = pd.DataFrame(portfolio_comparison)
                 
-                # Podświetl najlepszy ROI i lewar x5
-                def highlight_rows(row):
+                def highlight_portfolio(row):
                     if row['Lewar'] == '5x':
                         return ['background-color: #FFD700; font-weight: bold'] * len(row)
-                    elif row['ROI (%)'] == comparison_df['ROI (%)'].max() and row['ROI (%)'] > 0:
+                    elif row['ROI (%)'] == portfolio_df['ROI (%)'].max() and row['ROI (%)'] > 0:
                         return ['background-color: #90EE90'] * len(row)
                     elif row['ROI (%)'] < 0:
                         return ['background-color: #FFB6C1'] * len(row)
                     return [''] * len(row)
                 
                 st.dataframe(
-                    comparison_df.style.apply(highlight_rows, axis=1),
+                    portfolio_df.style.apply(highlight_portfolio, axis=1),
                     use_container_width=True
                 )
                 
-                st.caption("🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny")
+                st.caption(f"🟨 Złoty = Lewar x5 | 🟩 Zielony = Najlepszy ROI | 🟥 Czerwony = ROI ujemny | "
+                          f"Alokacja: {capital_per_pair}")
                 
-                # Wykresy
-                st.header("📈 Wizualizacje")
+                # Wykres kapitału portfela
+                st.subheader("📈 Kapitał Portfela w czasie")
+                fig_portfolio, ax_portfolio = plt.subplots(figsize=(14, 7))
                 
-                # Wykres 1: Kapitał w czasie
-                fig1, ax1 = plt.subplots(figsize=(12, 6))
                 for lev in leverages:
-                    if results[lev] is not None:
-                        trades = results[lev]['trades']
+                    if portfolio_results[lev] is not None:
+                        trades = portfolio_results[lev]['trades']
                         linewidth = 3 if lev == 5 else 2
                         alpha = 1.0 if lev == 5 else 0.7
-                        ax1.plot(trades['Entry_Date'], trades['Capital'], 
+                        ax_portfolio.plot(trades['Entry_Date'], trades['Capital'], 
                                 label=f'Lewar {lev}x' + (' ⭐' if lev == 5 else ''), 
                                 linewidth=linewidth, marker='o', markersize=4 if lev == 5 else 3,
                                 alpha=alpha)
                 
-                ax1.axhline(y=initial_capital, color='black', linestyle='--', 
+                ax_portfolio.axhline(y=initial_capital, color='black', linestyle='--', 
                            linewidth=1, alpha=0.5, label='Kapitał początkowy')
-                ax1.set_title('Wartość Portfela w Czasie', fontsize=14, fontweight='bold')
-                ax1.set_xlabel('Data')
-                ax1.set_ylabel('Kapitał (PLN)')
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                ax_portfolio.set_title('Wartość Portfela Multi-Currency', fontsize=16, fontweight='bold')
+                ax_portfolio.set_xlabel('Data', fontsize=12)
+                ax_portfolio.set_ylabel('Kapitał (PLN)', fontsize=12)
+                ax_portfolio.legend(fontsize=10)
+                ax_portfolio.grid(True, alpha=0.3)
+                ax_portfolio.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
                 plt.xticks(rotation=45)
-                st.pyplot(fig1)
+                st.pyplot(fig_portfolio)
+            
+            # WYNIKI - POSZCZEGÓLNE PARY
+            st.header("📊 Wyniki poszczególnych par")
+            
+            selected_lev_comparison = st.selectbox(
+                "Wybierz lewar do porównania par:",
+                leverages,
+                index=leverages.index(5) if 5 in leverages else 0
+            )
+            
+            if results_by_pair[selected_lev_comparison]:
+                comparison_by_pair = []
                 
-                # Wykres 2: ROI porównanie
-                col1, col2 = st.columns(2)
+                for name in pair_names:
+                    if name in results_by_pair[selected_lev_comparison] and results_by_pair[selected_lev_comparison][name] is not None:
+                        m = results_by_pair[selected_lev_comparison][name]['metrics']
+                        comparison_by_pair.append({
+                            'Para': name,
+                            'Transakcje': m['num_trades'],
+                            'ROI (%)': round(m['roi'], 2),
+                            'Win Rate (%)': round(m['win_rate'], 1),
+                            'Max Drawdown (%)': round(m['max_drawdown'], 2),
+                            'Najlepsza (%)': round(m['best_trade'], 2),
+                            'Najgorsza (%)': round(m['worst_trade'], 2)
+                        })
                 
-                with col1:
-                    fig2, ax2 = plt.subplots(figsize=(8, 6))
-                    valid_results = [(lev, results[lev]['metrics']['roi']) 
-                                    for lev in leverages if results[lev] is not None]
-                    if valid_results:
-                        levs, rois = zip(*valid_results)
-                        colors = ['gold' if l == 5 else ('green' if r > 0 else 'red') 
-                                 for l, r in zip(levs, rois)]
-                        bars = ax2.bar([f"{l}x" for l in levs], rois, color=colors, 
-                                      alpha=0.8, edgecolor='black', linewidth=2)
-                        ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
-                        ax2.set_title('ROI - Porównanie', fontsize=12, fontweight='bold')
-                        ax2.set_ylabel('ROI (%)')
-                        ax2.grid(True, alpha=0.3, axis='y')
-                        
-                        for bar, lev in zip(bars, levs):
-                            height = bar.get_height()
-                            weight = 'bold' if lev == 5 else 'normal'
-                            ax2.text(bar.get_x() + bar.get_width()/2., height,
-                                    f'{height:.1f}%', ha='center', 
-                                    va='bottom' if height > 0 else 'top', 
-                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
-                    st.pyplot(fig2)
-                
-                with col2:
-                    fig3, ax3 = plt.subplots(figsize=(8, 6))
-                    valid_results = [(lev, results[lev]['metrics']['max_drawdown']) 
-                                    for lev in leverages if results[lev] is not None]
-                    if valid_results:
-                        levs, dds = zip(*valid_results)
-                        colors = ['gold' if l == 5 else 'orange' for l in levs]
-                        bars = ax3.bar([f"{l}x" for l in levs], dds, color=colors, 
-                                      alpha=0.8, edgecolor='black', linewidth=2)
-                        ax3.set_title('Max Drawdown - Porównanie', fontsize=12, fontweight='bold')
-                        ax3.set_ylabel('Max Drawdown (%)')
-                        ax3.grid(True, alpha=0.3, axis='y')
-                        
-                        for bar, lev in zip(bars, levs):
-                            height = bar.get_height()
-                            weight = 'bold' if lev == 5 else 'normal'
-                            ax3.text(bar.get_x() + bar.get_width()/2., height,
-                                    f'{height:.1f}%', ha='center', va='bottom',
-                                    fontweight=weight, fontsize=10 if lev == 5 else 9)
-                    st.pyplot(fig3)
-                
-                # Szczegóły dla wybranego lewaru
-                st.header("🔍 Szczegóły")
-                selected_lev = st.selectbox("Wybierz lewar do szczegółowej analizy:", leverages, 
-                                           index=leverages.index(5) if 5 in leverages else 0)
-                
-                if results[selected_lev] is not None:
-                    trades = results[selected_lev]['trades']
-                    metrics = results[selected_lev]['metrics']
+                if comparison_by_pair:
+                    pairs_df = pd.DataFrame(comparison_by_pair)
                     
-                    # Metryki w kolumnach
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Liczba transakcji", metrics['num_trades'])
-                        st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                    with col2:
-                        st.metric("ROI", f"{metrics['roi']:.2f}%", 
-                                 delta=f"{metrics['profit_loss']:+,.2f} PLN")
-                        st.metric("Kapitał końcowy", f"{metrics['final_capital']:,.2f} PLN")
-                    with col3:
-                        st.metric("Najlepsza transakcja", f"{metrics['best_trade']:.2f}%")
-                        st.metric("Najgorsza transakcja", f"{metrics['worst_trade']:.2f}%")
-                    with col4:
-                        st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-                        st.metric("Średni zwrot", f"{metrics['avg_return']:.2f}%")
+                    def highlight_best_pair(row):
+                        if row['ROI (%)'] == pairs_df['ROI (%)'].max() and row['ROI (%)'] > 0:
+                            return ['background-color: #90EE90'] * len(row)
+                        elif row['ROI (%)'] < 0:
+                            return ['background-color: #FFB6C1'] * len(row)
+                        return [''] * len(row)
                     
-                    # Zwroty roczne
-                    st.subheader("📅 Zwroty roczne")
-                    yearly = trades.groupby('Year')['PnL_Leveraged_%'].agg(['sum', 'count']).round(2)
-                    yearly.columns = ['Suma (%)', 'Liczba transakcji']
-                    st.dataframe(yearly, use_container_width=True)
-                    
-                    # Tabela transakcji
-                    st.subheader("📋 Wszystkie transakcje")
-                    trades_display = trades[['Entry_Date', 'Exit_Date', 'Signal', 
-                                            'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
-                    trades_display['Entry_Date'] = trades_display['Entry_Date'].dt.strftime('%Y-%m-%d')
-                    trades_display['Exit_Date'] = trades_display['Exit_Date'].dt.strftime('%Y-%m-%d')
-                    trades_display = trades_display.round(4)
-                    st.dataframe(trades_display, use_container_width=True)
-                    
-                    # Download CSV
-                    csv = trades.to_csv(index=False)
-                    st.download_button(
-                        label="💾 Pobierz szczegóły transakcji (CSV)",
-                        data=csv,
-                        file_name=f"backtest_leverage_{selected_lev}x_{holding_days}days.csv",
-                        mime="text/csv"
+                    st.dataframe(
+                        pairs_df.style.apply(highlight_best_pair, axis=1),
+                        use_container_width=True
                     )
-                else:
-                    st.warning(f"⚠️ Brak transakcji dla lewaru {selected_lev}x")
+                    
+                    # Wykres porównania ROI par
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        fig_pairs_roi, ax_pairs_roi = plt.subplots(figsize=(10, 6))
+                        colors = ['green' if r > 0 else 'red' for r in pairs_df['ROI (%)']]
+                        bars = ax_pairs_roi.barh(pairs_df['Para'], pairs_df['ROI (%)'], 
+                                                 color=colors, alpha=0.7, edgecolor='black')
+                        ax_pairs_roi.axvline(x=0, color='black', linestyle='-', linewidth=1)
+                        ax_pairs_roi.set_title(f'ROI par przy lewarze {selected_lev_comparison}x', 
+                                              fontsize=12, fontweight='bold')
+                        ax_pairs_roi.set_xlabel('ROI (%)')
+                        ax_pairs_roi.grid(True, alpha=0.3, axis='x')
+                        
+                        for bar in bars:
+                            width = bar.get_width()
+                            ax_pairs_roi.text(width, bar.get_y() + bar.get_height()/2.,
+                                            f'{width:.1f}%', ha='left' if width > 0 else 'right',
+                                            va='center', fontweight='bold')
+                        st.pyplot(fig_pairs_roi)
+                    
+                    with col2:
+                        fig_pairs_trades, ax_pairs_trades = plt.subplots(figsize=(10, 6))
+                        ax_pairs_trades.barh(pairs_df['Para'], pairs_df['Transakcje'], 
+                                            color='steelblue', alpha=0.7, edgecolor='black')
+                        ax_pairs_trades.set_title(f'Liczba transakcji przy lewarze {selected_lev_comparison}x', 
+                                                 fontsize=12, fontweight='bold')
+                        ax_pairs_trades.set_xlabel('Liczba transakcji')
+                        ax_pairs_trades.grid(True, alpha=0.3, axis='x')
+                        st.pyplot(fig_pairs_trades)
+            
+            # Szczegóły wybranej pary
+            st.header("🔍 Szczegółowa analiza")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_pair = st.selectbox("Wybierz parę:", pair_names)
+            with col2:
+                selected_lev = st.selectbox("Wybierz lewar:", leverages,
+                                           index=leverages.index(5) if 5 in leverages else 0)
+            
+            if (selected_pair in results_by_pair[selected_lev] and 
+                results_by_pair[selected_lev][selected_pair] is not None):
+                
+                trades = results_by_pair[selected_lev][selected_pair]['trades']
+                metrics = results_by_pair[selected_lev][selected_pair]['metrics']
+                
+                # Metryki
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Transakcje", metrics['num_trades'])
+                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+                with col2:
+                    st.metric("ROI", f"{metrics['roi']:.2f}%", 
+                             delta=f"{metrics['profit_loss']:+,.2f} PLN")
+                    st.metric("Kapitał końcowy", f"{metrics['final_capital']:,.2f} PLN")
+                with col3:
+                    st.metric("Najlepsza", f"{metrics['best_trade']:.2f}%")
+                    st.metric("Najgorsza", f"{metrics['worst_trade']:.2f}%")
+                with col4:
+                    st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
+                    st.metric("Średni zwrot", f"{metrics['avg_return']:.2f}%")
+                
+                # Tabela transakcji
+                st.subheader("📋 Historia transakcji")
+                trades_display = trades[['Entry_Date', 'Exit_Date', 'Signal', 
+                                        'Entry_Price', 'Exit_Price', 'PnL_Leveraged_%']].copy()
+                trades_display['Entry_Date'] = trades_display['Entry_Date'].dt.strftime('%Y-%m-%d')
+                trades_display['Exit_Date'] = trades_display['Exit_Date'].dt.strftime('%Y-%m-%d')
+                trades_display = trades_display.round(4)
+                st.dataframe(trades_display, use_container_width=True, height=300)
+                
+                # Download
+                csv = trades.to_csv(index=False)
+                st.download_button(
+                    label=f"💾 Pobierz transakcje {selected_pair} (CSV)",
+                    data=csv,
+                    file_name=f"backtest_{selected_pair}_lev{selected_lev}x.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning(f"⚠️ Brak transakcji dla {selected_pair} z lewarem {selected_lev}x")
 
 else:
     # Instrukcja użycia
     st.info(f"""
-    ### 👋 Witaj w Pivot Points Backtest Tool!
+    ### 👋 Witaj w Multi-Currency Pivot Points Backtest Tool!
     
     **Jak używać:**
-    1. 📁 Wgraj plik CSV z danymi historycznymi w lewym panelu
-    2. ⚙️ Ustaw parametry strategii (lookback, próg, lewary, duration)
-    3. 🚀 Kliknij "Uruchom backtest"
-    4. 📊 Analizuj wyniki i porównaj różne lewary!
+    1. 📁 Wgraj do 5 plików CSV z różnymi parami walutowymi
+    2. 🏷️ Nadaj nazwy parom (np. USDPLN, EURPLN, GBPPLN)
+    3. ⚙️ Ustaw parametry strategii
+    4. 💰 Wybierz metodę alokacji kapitału
+    5. 🚀 Kliknij "Uruchom backtest"
+    6. 📊 Analizuj wyniki portfela i poszczególnych par!
+    
+    **Metody alokacji:**
+    - **Równomiernie**: Kapitał 10,000 PLN / 3 pary = 3,333 PLN na parę
+    - **Pełny kapitał**: 10,000 PLN na każdą parę (wyższe ryzyko/zwrot)
     
     **Format pliku CSV:**
     - Kolumny: `Date`, `Price`, `Open`, `High`, `Low`
     - Format daty: MM/DD/YYYY
     - Separator: przecinek
-    
-    **Strategia:**
-    - Oblicza pivot points z ostatnich N dni przed każdym poniedziałkiem
-    - Kupuje gdy cena ≤ X% poniżej Pivot Point
-    - Sprzedaje gdy cena ≥ X% powyżej Pivot Point
-    - Zamyka pozycje po {holding_days} dniach roboczych
-    - **Lewar x5 jest wyróżniony złotym kolorem** ⭐
     """)
     
-    # Przykładowy format danych
+    # Przykładowy format
     st.subheader("📋 Przykładowy format pliku CSV:")
     example_data = pd.DataFrame({
         'Date': ['10/31/2025', '10/30/2025', '10/29/2025'],
@@ -456,11 +563,11 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 O strategii")
 st.sidebar.info(f"""
-**Pivot Points** to poziomy wsparcia i oporu obliczone na podstawie 
-historycznych cen (High, Low, Close). Strategia wykorzystuje odchylenia 
-od tych poziomów do generowania sygnałów kupna i sprzedaży.
+**Multi-Currency Portfolio** łączy sygnały z różnych par walutowych 
+w jeden zdywersyfikowany portfel, co może zmniejszyć ryzyko i zwiększyć 
+stabilność zwrotów.
 
-**Duration:** Pozycje są zamykane po {holding_days} dniach roboczych.
+**Duration:** {holding_days} dni
 """)
 
 st.sidebar.markdown("---")
